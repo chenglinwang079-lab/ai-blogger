@@ -9,6 +9,63 @@ from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+_FONT_MAP = {
+    "Microsoft YaHei": "C:/Windows/Fonts/msyh.ttc",
+    "SimHei": "C:/Windows/Fonts/simhei.ttf",
+    "SimSun": "C:/Windows/Fonts/simsun.ttc",
+    "FangSong": "C:/Windows/Fonts/simfang.ttf",
+}
+
+
+def _resolve_font_path(config: dict) -> str | None:
+    """从 config 解析字体文件路径。优先 assets/fonts/，其次系统字体。"""
+    fonts_dir = Path(config["paths"].get("fonts_dir", "assets/fonts"))
+    if not fonts_dir.is_absolute():
+        fonts_dir = _PROJECT_ROOT / fonts_dir
+    font_name = config["video"].get("subtitle_font", "Microsoft YaHei")
+
+    # 1. assets/fonts/ 下按名称查找
+    for ext in (".ttf", ".ttc", ".otf"):
+        candidate = fonts_dir / f"{font_name}{ext}"
+        if candidate.exists():
+            return str(candidate)
+
+    # 2. assets/fonts/ 下任意字体
+    if fonts_dir.exists():
+        for f in fonts_dir.iterdir():
+            if f.suffix.lower() in (".ttf", ".ttc", ".otf"):
+                return str(f)
+
+    # 3. 按名称映射系统字体
+    if font_name in _FONT_MAP and Path(_FONT_MAP[font_name]).exists():
+        return _FONT_MAP[font_name]
+
+    # 4. 任意系统中文字体
+    for sys_font in _FONT_MAP.values():
+        if Path(sys_font).exists():
+            return sys_font
+
+    return None
+
+
+def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: ImageDraw.ImageDraw) -> list[str]:
+    """按像素宽度自动换行。"""
+    lines = []
+    current = ""
+    for ch in text:
+        test = current + ch
+        bbox = draw.textbbox((0, 0), test, font=font)
+        if bbox[2] - bbox[0] > max_width and current:
+            lines.append(current)
+            current = ch
+        else:
+            current = test
+    if current:
+        lines.append(current)
+    return lines
+
 
 def _create_background(width: int, height: int) -> np.ndarray:
     """深色渐变背景。"""
@@ -42,17 +99,33 @@ def _render_frame(
         font_large = ImageFont.load_default()
         font_sub = ImageFont.load_default()
 
-    # 关键词大字居中
+    # 关键词大字居中（限 2 行）
     if keyword:
-        bbox = draw.textbbox((0, 0), keyword, font=font_large)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.text(((width - tw) // 2, height // 3 - th // 2), keyword, fill="white", font=font_large)
+        margin = 60
+        kw_lines = _wrap_text(keyword, font_large, width - margin * 2, draw)[:2]
+        line_h = font_size * 2 + 12
+        total_h = line_h * len(kw_lines)
+        y_start = height // 3 - total_h // 2
+        for i, line in enumerate(kw_lines):
+            bbox = draw.textbbox((0, 0), line, font=font_large)
+            tw = bbox[2] - bbox[0]
+            x = (width - tw) // 2
+            y = y_start + i * line_h
+            draw.text((x, y), line, fill="white", font=font_large, stroke_width=2, stroke_fill="black")
 
-    # 字幕底部
+    # 字幕底部（自动换行 + 描边）
     if text:
-        bbox = draw.textbbox((0, 0), text, font=font_sub)
-        tw = bbox[2] - bbox[0]
-        draw.text(((width - tw) // 2, height * 3 // 4), text, fill="white", font=font_sub)
+        margin = 60
+        sub_lines = _wrap_text(text, font_sub, width - margin * 2, draw)
+        line_h = font_size + 8
+        total_h = line_h * len(sub_lines)
+        y_start = height * 3 // 4 - total_h // 2
+        for i, line in enumerate(sub_lines):
+            bbox = draw.textbbox((0, 0), line, font=font_sub)
+            tw = bbox[2] - bbox[0]
+            x = (width - tw) // 2
+            y = y_start + i * line_h
+            draw.text((x, y), line, fill="white", font=font_sub, stroke_width=2, stroke_fill="black")
 
     return np.array(img)
 
@@ -102,7 +175,7 @@ def render_video(script_id: str, config: dict) -> str:
     # 视频参数
     res = config["video"]["resolution"].split("x")
     width, height = int(res[0]), int(res[1])
-    font_path = None  # TODO: 从 config 查找字体文件
+    font_path = _resolve_font_path(config)
 
     # 预生成渐变背景（只生成一次，每帧复用）
     bg_image = Image.fromarray(_create_background(width, height))
@@ -123,13 +196,37 @@ def render_video(script_id: str, config: dict) -> str:
 
     video = VideoClip(make_frame, duration=total_duration)
     audio_clip = None
+    bgm_clip = None
 
     try:
         # 混入音频
         audio_path = output_dir / "audio.wav"
         if audio_path.exists():
             audio_clip = AudioFileClip(str(audio_path))
-            video = video.with_audio(audio_clip)
+
+            # BGM 混音
+            bgm_dir = Path(config["paths"].get("bgm_dir", "assets/bgm"))
+            if not bgm_dir.is_absolute():
+                bgm_dir = _PROJECT_ROOT / bgm_dir
+            bgm_volume = config["video"].get("bgm_volume", 0.15)
+            if bgm_dir.exists():
+                bgm_files = [f for f in bgm_dir.iterdir() if f.suffix.lower() in (".mp3", ".wav", ".ogg")]
+                if bgm_files:
+                    import random
+                    bgm_path = random.choice(bgm_files)
+                    logger.info(f"BGM: {bgm_path.name}")
+                    bgm_clip = AudioFileClip(str(bgm_path))
+                    if bgm_clip.duration < total_duration:
+                        from moviepy import concatenate_audioclips
+                        repeats = int(total_duration / bgm_clip.duration) + 1
+                        bgm_clip = concatenate_audioclips([bgm_clip.subclipped(0, bgm_clip.duration) for _ in range(repeats)])
+                    bgm_clip = bgm_clip.subclipped(0, total_duration).with_volume_scaled(bgm_volume)
+
+            if bgm_clip is not None:
+                mixed = CompositeAudioClip([audio_clip, bgm_clip])
+                video = video.with_audio(mixed)
+            else:
+                video = video.with_audio(audio_clip)
 
         # 输出
         output_path = output_dir / "final.mp4"
@@ -143,6 +240,8 @@ def render_video(script_id: str, config: dict) -> str:
     finally:
         if audio_clip is not None:
             audio_clip.close()
+        if bgm_clip is not None:
+            bgm_clip.close()
         video.close()
 
     # 更新 manifest

@@ -149,11 +149,14 @@ def retro(script_id: str, actual: dict, config: dict) -> dict:
     report_lines.append("| 指标 | P50 | P80 | 实际 | 偏差 |")
     report_lines.append("|------|-----|-----|------|------|")
 
+    deviations = {}
     for metric in ["views", "likes", "comments"]:
         p50 = prediction.get(metric, {}).get("p50", 0)
         p80 = prediction.get(metric, {}).get("p80", 0)
         act = actual.get(metric, 0)
-        deviation = f"{((act - p50) / p50 * 100):.0f}%" if p50 else "N/A"
+        dev_pct = ((act - p50) / p50 * 100) if p50 else None
+        deviation = f"{dev_pct:.0f}%" if dev_pct is not None else "N/A"
+        deviations[metric] = round(dev_pct, 1) if dev_pct is not None else None
         report_lines.append(f"| {metric} | {p50} | {p80} | {act} | {deviation} |")
 
     report_lines.extend([
@@ -177,4 +180,4 @@ def retro(script_id: str, actual: dict, config: dict) -> dict:
     state["last_retro_at"] = datetime.now(timezone.utc).isoformat()
     state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    return {"report_path": str(report_dir / "report.md"), "deviations": {}}
+    return {"report_path": str(report_dir / "report.md"), "deviations": deviations}
