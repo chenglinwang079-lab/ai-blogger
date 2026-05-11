@@ -39,7 +39,7 @@ def fetch_topics(category: str = "ai-models", take: int = 10, cheat_root: str = 
         resp = requests.get(url, headers={"User-Agent": ua}, timeout=15)
         resp.raise_for_status()
         data = resp.json()
-    except Exception as e:
+    except (requests.RequestException, ValueError, KeyError) as e:
         import sys
         print(f"AI HOT API 调用失败: {e}", file=sys.stderr)
         return []

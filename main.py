@@ -37,9 +37,9 @@ def load_config(config_path: Path | None = None) -> dict:
     with open(path, "rb") as f:
         config = tomllib.load(f)
 
-    # API key fallback 到环境变量
+    # API key fallback 到环境变量（优先 MIMO_API_KEY，其次 OPENAI_API_KEY）
     if not config.get("api", {}).get("openai_api_key"):
-        env_key = os.environ.get("MIMO_API_KEY", "")
+        env_key = os.environ.get("MIMO_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
         if env_key:
             config.setdefault("api", {})["openai_api_key"] = env_key
 

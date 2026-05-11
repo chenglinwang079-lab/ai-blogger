@@ -1,5 +1,6 @@
 """TTS：VoxCPM2（降级 edge-tts）"""
 
+import asyncio
 import json
 import logging
 import tempfile
@@ -9,6 +10,28 @@ import numpy as np
 import soundfile as sf
 
 logger = logging.getLogger(__name__)
+
+# VoxCPM2 模型缓存（避免每次 TTS 重载）
+_voxcpm_cache: dict[str, object] = {}
+
+
+def _get_voxcpm_model(model_path: str):
+    """获取缓存的 VoxCPM2 模型，不存在则加载。"""
+    if model_path not in _voxcpm_cache:
+        from voxcpm import VoxCPM
+        _voxcpm_cache[model_path] = VoxCPM.from_pretrained(model_path, load_denoiser=False)
+    return _voxcpm_cache[model_path]
+
+
+def clear_voxcpm_cache() -> None:
+    """手动释放 VoxCPM2 模型缓存和 VRAM。"""
+    _voxcpm_cache.clear()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
 
 
 def _split_text(text: str, max_chars: int) -> list[str]:
@@ -31,64 +54,87 @@ def _split_text(text: str, max_chars: int) -> list[str]:
     return segments
 
 
-def _generate_voxcpm2(texts: list[str], config: dict) -> tuple[np.ndarray, int]:
-    """VoxCPM2 生成，返回 (audio_array, sample_rate)。"""
-    import torch
-    from voxcpm import VoxCPM
-
+def _generate_voxcpm2(texts: list[str], config: dict) -> tuple[np.ndarray, int, list[float]]:
+    """VoxCPM2 生成，返回 (audio_array, sample_rate, durations)。"""
     model_path = config["paths"]["voxcpm_model"]
     sr = config["tts"]["sample_rate"]
 
-    model = VoxCPM.from_pretrained(model_path, load_denoiser=False)
+    model = _get_voxcpm_model(model_path)
 
     all_audio = []
+    durations = []
     for text in texts:
         wav = model.generate(text=text, cfg_value=2.0, inference_timesteps=10)
         all_audio.append(wav)
+        durations.append(len(wav) / sr)
 
     combined = np.concatenate(all_audio)
-
-    # 清理 VRAM
-    del model
-    torch.cuda.empty_cache()
-
-    return combined, sr
+    return combined, sr, durations
 
 
-def _generate_edge_tts(texts: list[str], config: dict) -> tuple[np.ndarray, int]:
-    """edge-tts 降级方案，返回 (audio_array, sample_rate)。"""
-    import asyncio
+def _run_async_safely(coro):
+    """在无 event loop 时用 asyncio.run()，有时在独立线程中运行。"""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    import threading
+    result, error = {}, {}
+
+    def runner():
+        try:
+            result["value"] = asyncio.run(coro)
+        except Exception as exc:
+            error["error"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if "error" in error:
+        raise error["error"]
+    return result["value"]
+
+
+async def _generate_edge_tts_async(texts: list[str], sr: int) -> tuple[list[np.ndarray], list[float]]:
+    """批量 edge-tts 生成，返回 (audio_list, duration_list)。"""
     import edge_tts
     from moviepy.audio.io.AudioFileClip import AudioFileClip
 
-    sr = config["tts"]["sample_rate"]
     all_audio = []
-
-    async def _gen(text: str, output_path: str):
-        communicate = edge_tts.Communicate(text, "zh-CN-YunxiNeural")
-        await communicate.save(output_path)
-
-    for i, text in enumerate(texts):
+    durations = []
+    for text in texts:
         mp3_path = None
         clip = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 mp3_path = f.name
-
-            asyncio.run(_gen(text, mp3_path))
-
+            communicate = edge_tts.Communicate(text, "zh-CN-YunxiNeural")
+            await communicate.save(mp3_path)
             clip = AudioFileClip(mp3_path)
             audio = clip.to_soundarray(fps=sr)
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
             all_audio.append(audio)
+            durations.append(len(audio) / sr)
         finally:
             if clip is not None:
                 clip.close()
             if mp3_path is not None:
                 Path(mp3_path).unlink(missing_ok=True)
+    return all_audio, durations
 
-    return np.concatenate(all_audio), sr
+
+def _generate_edge_tts(texts: list[str], config: dict) -> tuple[np.ndarray, int, list[float]]:
+    """edge-tts 降级方案，返回 (audio_array, sample_rate, durations)。"""
+    sr = config["tts"]["sample_rate"]
+    if not texts:
+        return np.array([], dtype=np.float32), sr, []
+    all_audio, durations = _run_async_safely(_generate_edge_tts_async(texts, sr))
+    if not all_audio:
+        return np.array([], dtype=np.float32), sr, []
+    return np.concatenate(all_audio), sr, durations
 
 
 def generate_audio(script_id: str, config: dict) -> dict:
@@ -134,34 +180,34 @@ def generate_audio(script_id: str, config: dict) -> dict:
 
     # 尝试 VoxCPM2，OOM 降级 edge-tts
     try:
-        audio, sr = _generate_voxcpm2(segments, config)
+        audio, sr, durations = _generate_voxcpm2(segments, config)
         backend = "voxcpm2"
     except Exception as e:
-        # 捕获 VoxCPM2 所有失败（OOM、ImportError、RuntimeError 等）
         logger.warning(f"VoxCPM2 失败 ({e})，降级到 edge-tts")
-        audio, sr = _generate_edge_tts(segments, config)
+        audio, sr, durations = _generate_edge_tts(segments, config)
         backend = "edge-tts"
+
+    # 校验 durations 与 segments 长度一致
+    if len(durations) != len(segments):
+        raise ValueError(
+            f"durations length ({len(durations)}) must match script segments ({len(segments)})"
+        )
 
     sf.write(str(audio_path), audio, sr)
 
     # 更新 manifest
     update_manifest(script_dir, "tts")
 
-    # timestamps — 用实际音频时长按字符比例分配
-    info = sf.info(str(audio_path))
-    total_duration = info.duration
-    total_chars = sum(len(s) for s in segments) or 1
-
+    # timestamps — 用真实音频段时长
     timestamps = []
     offset = 0.0
-    for seg in segments:
-        duration = total_duration * len(seg) / total_chars
+    for seg, dur in zip(segments, durations):
         timestamps.append({
             "text": seg,
             "start": round(offset, 2),
-            "end": round(offset + duration, 2),
+            "end": round(offset + dur, 2),
         })
-        offset += duration
+        offset += dur
 
     timestamps_path.write_text(
         json.dumps(timestamps, ensure_ascii=False, indent=2), encoding="utf-8"

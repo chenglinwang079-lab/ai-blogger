@@ -29,10 +29,10 @@ def _render_frame(
     keyword: str,
     font_path: str | None,
     font_size: int = 42,
+    bg_image: Image.Image | None = None,
 ) -> np.ndarray:
     """渲染单帧：渐变背景 + 关键词大字 + 字幕。"""
-    bg = _create_background(width, height)
-    img = Image.fromarray(bg)
+    img = bg_image.copy() if bg_image is not None else Image.fromarray(_create_background(width, height))
     draw = ImageDraw.Draw(img)
 
     try:
@@ -104,6 +104,9 @@ def render_video(script_id: str, config: dict) -> str:
     width, height = int(res[0]), int(res[1])
     font_path = None  # TODO: 从 config 查找字体文件
 
+    # 预生成渐变背景（只生成一次，每帧复用）
+    bg_image = Image.fromarray(_create_background(width, height))
+
     # 计算总时长
     total_duration = timestamps[-1]["end"] if timestamps else 10
 
@@ -116,7 +119,7 @@ def render_video(script_id: str, config: dict) -> str:
                 keyword = keywords[i] if i < len(keywords) else ""
                 text = ts["text"]
                 break
-        return _render_frame(width, height, text, keyword, font_path, config["video"]["subtitle_fontsize"])
+        return _render_frame(width, height, text, keyword, font_path, config["video"]["subtitle_fontsize"], bg_image)
 
     video = VideoClip(make_frame, duration=total_duration)
     audio_clip = None
