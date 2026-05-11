@@ -183,6 +183,10 @@ def cmd_run(args: argparse.Namespace, config: dict) -> None:
             completed = set(manifest.get("completed_steps", []))
             steps_to_run = [s for s in steps_to_run if s not in completed]
             logger.info(f"跳过已完成: {', '.join(completed)}")
+        elif args.force:
+            # --force + --script-id: 跳过 topic 和 script，从 score 开始重跑
+            steps_to_run = [s for s in steps_to_run if s not in {"topic", "script"}]
+            logger.info("强制模式：从已有脚本重跑 score 及后续步骤")
     elif args.topic:
         logger.info(f"选题: {args.topic}")
         topic = {"title": args.topic, "snapshot_text": "", "source": "manual"}
@@ -191,9 +195,6 @@ def cmd_run(args: argparse.Namespace, config: dict) -> None:
     else:
         logger.error("run 命令需要 --topic 或 --script-id")
         sys.exit(1)
-
-    if args.force:
-        logger.info("强制模式：忽略 checkpoint，从头重跑")
 
     for step in steps_to_run:
         logger.info(f"--- 步骤: {step} ---")
