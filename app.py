@@ -356,9 +356,19 @@ def tts_gen_cb(script_id_choice: str):
         yield f"```\n{err}\n```", None, "", ""
         return
 
+    segments_total = result.get("segments_total", "?")
+    segments_voxcpm2 = result.get("segments_voxcpm2", 0)
+    segments_edge_tts = result.get("segments_edge_tts", 0)
+    fallback_reason = result.get("fallback_reason") or "none"
+
     yield (
-        f"✅ 音频完成\nbackend: {result['backend']}\n"
-        f"duration: {result['duration']}s\npath: {result['audio_path']}",
+        f"✅ 音频完成\n"
+        f"backend: {result['backend']}\n"
+        f"VoxCPM2: {segments_voxcpm2}/{segments_total} 段\n"
+        f"edge-tts: {segments_edge_tts}/{segments_total} 段\n"
+        f"fallback_reason: {fallback_reason}\n"
+        f"duration: {result['duration']}s\n"
+        f"path: {result['audio_path']}",
         existing_path(result["audio_path"]),
         result["backend"],
         f"{result['duration']}s",
@@ -397,7 +407,17 @@ def pipeline_gen_cb(script_id_choice: str):
         yield f"```\n{tts_err}\n```", None, None, ""
         return
 
-    audio_info = f"audio: {tts_result['audio_path']} ({tts_result['backend']}, {tts_result['duration']}s)"
+    seg_total = tts_result.get("segments_total", "?")
+    seg_vox = tts_result.get("segments_voxcpm2", 0)
+    seg_edge = tts_result.get("segments_edge_tts", 0)
+    fb_reason = tts_result.get("fallback_reason") or "none"
+    audio_info = (
+        f"audio: {tts_result['audio_path']}\n"
+        f"backend: {tts_result['backend']} "
+        f"(VoxCPM2: {seg_vox}/{seg_total}, edge-tts: {seg_edge}/{seg_total}, "
+        f"fallback: {fb_reason})\n"
+        f"duration: {tts_result['duration']}s"
+    )
 
     # Render
     yield "⏳ [2/2] 正在渲染视频...", existing_path(tts_result["audio_path"]), None, audio_info

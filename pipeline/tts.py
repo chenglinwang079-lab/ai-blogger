@@ -1,8 +1,9 @@
-"""TTS：VoxCPM2（降级 edge-tts）"""
+"""TTS：VoxCPM2（每段独立，失败段自动降级 edge-tts）"""
 
 import asyncio
 import json
 import logging
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -34,6 +35,12 @@ def clear_voxcpm_cache() -> None:
         pass
 
 
+def _is_oom_error(exc: Exception) -> bool:
+    """判断是否为 OOM 相关错误。"""
+    msg = str(exc).lower()
+    return "out of memory" in msg or ("cuda" in msg and "memory" in msg)
+
+
 def _split_text(text: str, max_chars: int) -> list[str]:
     """按标点或长度拆分文本。"""
     if len(text) <= max_chars:
@@ -54,22 +61,21 @@ def _split_text(text: str, max_chars: int) -> list[str]:
     return segments
 
 
-def _generate_voxcpm2(texts: list[str], config: dict) -> tuple[np.ndarray, int, list[float]]:
-    """VoxCPM2 生成，返回 (audio_array, sample_rate, durations)。"""
-    model_path = config["paths"]["voxcpm_model"]
-    sr = config["tts"]["sample_rate"]
-
-    model = _get_voxcpm_model(model_path)
-
-    all_audio = []
-    durations = []
-    for text in texts:
-        wav = model.generate(text=text, cfg_value=2.0, inference_timesteps=10)
-        all_audio.append(wav)
-        durations.append(len(wav) / sr)
-
-    combined = np.concatenate(all_audio)
-    return combined, sr, durations
+def _generate_segment_voxcpm2(text: str, model, sr: int) -> tuple[np.ndarray, float]:
+    """单段 VoxCPM2 生成，返回 (audio_array, duration)。"""
+    wav = model.generate(text=text, cfg_value=2.0, inference_timesteps=10)
+    wav = np.asarray(wav, dtype=np.float32)
+    if wav.ndim > 1:
+        wav = wav.mean(axis=1)
+    duration = len(wav) / sr
+    # 显式释放 GPU 中间张量（仅释放推理缓存，模型本体仍在 _voxcpm_cache）
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+    return wav, duration
 
 
 def _run_async_safely(coro):
@@ -97,44 +103,125 @@ def _run_async_safely(coro):
     return result["value"]
 
 
-async def _generate_edge_tts_async(texts: list[str], sr: int) -> tuple[list[np.ndarray], list[float]]:
-    """批量 edge-tts 生成，返回 (audio_list, duration_list)。"""
+async def _generate_segment_edge_tts_async(text: str, sr: int) -> tuple[np.ndarray, float]:
+    """单段 edge-tts 生成。"""
     import edge_tts
     from moviepy.audio.io.AudioFileClip import AudioFileClip
 
-    all_audio = []
-    durations = []
-    for text in texts:
-        mp3_path = None
-        clip = None
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-                mp3_path = f.name
-            communicate = edge_tts.Communicate(text, "zh-CN-YunxiNeural")
-            await communicate.save(mp3_path)
-            clip = AudioFileClip(mp3_path)
-            audio = clip.to_soundarray(fps=sr)
-            if audio.ndim > 1:
-                audio = audio.mean(axis=1)
-            all_audio.append(audio)
-            durations.append(len(audio) / sr)
-        finally:
-            if clip is not None:
-                clip.close()
-            if mp3_path is not None:
-                Path(mp3_path).unlink(missing_ok=True)
-    return all_audio, durations
+    mp3_path = None
+    clip = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+            mp3_path = f.name
+        communicate = edge_tts.Communicate(text, "zh-CN-YunxiNeural")
+        await communicate.save(mp3_path)
+        clip = AudioFileClip(mp3_path)
+        audio = clip.to_soundarray(fps=sr)
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
+        audio = np.asarray(audio, dtype=np.float32)
+        duration = len(audio) / sr
+        return audio, duration
+    finally:
+        if clip is not None:
+            clip.close()
+        if mp3_path is not None:
+            Path(mp3_path).unlink(missing_ok=True)
 
 
-def _generate_edge_tts(texts: list[str], config: dict) -> tuple[np.ndarray, int, list[float]]:
-    """edge-tts 降级方案，返回 (audio_array, sample_rate, durations)。"""
+def _generate_segment_edge_tts(text: str, sr: int) -> tuple[np.ndarray, float]:
+    """单段 edge-tts 同步包装。"""
+    return _run_async_safely(_generate_segment_edge_tts_async(text, sr))
+
+
+def _concatenate_segments(temp_dir: Path, n: int, sr: int, output_path: Path) -> None:
+    """从磁盘逐段拼接到最终 WAV，避免全量加载到内存。"""
+    with sf.SoundFile(str(output_path), mode="w", samplerate=sr, channels=1, format="WAV") as out:
+        for i in range(n):
+            data, file_sr = sf.read(str(temp_dir / f"seg_{i:03d}.wav"), dtype="float32")
+            if file_sr != sr:
+                raise ValueError(f"Segment sample rate mismatch: {file_sr} != {sr}")
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            out.write(data)
+
+
+def _generate_hybrid(
+    segments: list[str], config: dict, script_id: str
+) -> tuple[str, list[float], list[str], str | None]:
+    """混合 TTS：每段独立，失败段自动降级 edge-tts。
+
+    Returns:
+        (audio_path, durations, backends, fallback_reason)
+        - fallback_reason: None | "oom" | "voxcpm2_error"
+    """
+    if not segments:
+        raise ValueError("No text segments to generate audio")
+
     sr = config["tts"]["sample_rate"]
-    if not texts:
-        return np.array([], dtype=np.float32), sr, []
-    all_audio, durations = _run_async_safely(_generate_edge_tts_async(texts, sr))
-    if not all_audio:
-        return np.array([], dtype=np.float32), sr, []
-    return np.concatenate(all_audio), sr, durations
+    output_dir = Path(config["paths"]["output_dir"]) / script_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir = output_dir / "_tts_segments"
+
+    # 清理可能残留的临时目录
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    model = None
+    voxcpm_failed = False
+    fallback_reason = None
+    durations = []
+    backends = []
+
+    try:
+        for i, text in enumerate(segments):
+            seg_path = temp_dir / f"seg_{i:03d}.wav"
+
+            if not voxcpm_failed:
+                try:
+                    if model is None:
+                        model = _get_voxcpm_model(config["paths"]["voxcpm_model"])
+                    wav, dur = _generate_segment_voxcpm2(text, model, sr)
+                    sf.write(str(seg_path), wav, sr)
+                    del wav
+                    durations.append(dur)
+                    backends.append("voxcpm2")
+                    continue
+                except Exception as e:
+                    reason = "oom" if _is_oom_error(e) else "voxcpm2_error"
+                    logger.warning(f"段 {i} VoxCPM2 失败 ({reason}: {e})，切换到 edge-tts")
+                    fallback_reason = reason
+                    voxcpm_failed = True
+                    clear_voxcpm_cache()
+                    model = None
+
+            # edge-tts fallback（单段）
+            try:
+                wav, dur = _generate_segment_edge_tts(text, sr)
+            except Exception as e:
+                logger.error(f"段 {i} edge-tts fallback 也失败: {e}")
+                raise
+            sf.write(str(seg_path), wav, sr)
+            del wav
+            durations.append(dur)
+            backends.append("edge-tts")
+
+        # 校验
+        if len(durations) != len(segments) or len(backends) != len(segments):
+            raise ValueError(
+                f"TTS durations/backends length mismatch: "
+                f"{len(durations)}/{len(backends)} vs {len(segments)} segments"
+            )
+
+        # 从磁盘拼接（流式）
+        audio_path = output_dir / "audio.wav"
+        _concatenate_segments(temp_dir, len(segments), sr, audio_path)
+
+    finally:
+        # 清理临时文件（无论成功与否）
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return str(audio_path), durations, backends, fallback_reason
 
 
 def generate_audio(script_id: str, config: dict) -> dict:
@@ -142,7 +229,7 @@ def generate_audio(script_id: str, config: dict) -> dict:
 
     - 读取 cheat/scripts/<script_id>/final.md
     - 单段超 max_segment_chars → 自动拆分
-    - OOM 降级：VoxCPM2 → edge-tts
+    - 每段独立：VoxCPM2 优先，失败段自动降级 edge-tts
     - 输出 dist/<script_id>/audio.wav + timestamps.json
     """
     from pipeline import update_manifest, validate_script_id
@@ -174,38 +261,24 @@ def generate_audio(script_id: str, config: dict) -> dict:
     max_chars = config["tts"]["max_segment_chars"]
     segments = _split_text(full_text, max_chars)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    audio_path = output_dir / "audio.wav"
-    timestamps_path = output_dir / "timestamps.json"
+    # 混合 TTS（每段独立，失败段自动降级）
+    audio_path, durations, backends, fallback_reason = _generate_hybrid(segments, config, script_id)
 
-    # 尝试 VoxCPM2，OOM 降级 edge-tts
-    try:
-        audio, sr, durations = _generate_voxcpm2(segments, config)
-        backend = "voxcpm2"
-    except Exception as e:
-        logger.warning(f"VoxCPM2 失败 ({e})，降级到 edge-tts")
-        audio, sr, durations = _generate_edge_tts(segments, config)
-        backend = "edge-tts"
-
-    # 校验 durations 与 segments 长度一致
-    if len(durations) != len(segments):
-        raise ValueError(
-            f"durations length ({len(durations)}) must match script segments ({len(segments)})"
-        )
-
-    sf.write(str(audio_path), audio, sr)
+    audio_path = Path(audio_path)
 
     # 更新 manifest
     update_manifest(script_dir, "tts")
 
-    # timestamps — 用真实音频段时长
+    # timestamps — 用真实音频段时长，新增 backend 字段
+    timestamps_path = output_dir / "timestamps.json"
     timestamps = []
     offset = 0.0
-    for seg, dur in zip(segments, durations):
+    for seg, dur, be in zip(segments, durations, backends):
         timestamps.append({
             "text": seg,
             "start": round(offset, 2),
             "end": round(offset + dur, 2),
+            "backend": be,
         })
         offset += dur
 
@@ -213,9 +286,22 @@ def generate_audio(script_id: str, config: dict) -> dict:
         json.dumps(timestamps, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
+    # 统计
+    voxcpm_count = backends.count("voxcpm2")
+    edge_count = backends.count("edge-tts")
+    overall_backend = (
+        "voxcpm2" if edge_count == 0
+        else "edge-tts" if voxcpm_count == 0
+        else "mixed"
+    )
+
     return {
         "audio_path": str(audio_path),
         "timestamps_path": str(timestamps_path),
-        "backend": backend,
+        "backend": overall_backend,
         "duration": round(offset, 2),
+        "segments_total": len(segments),
+        "segments_voxcpm2": voxcpm_count,
+        "segments_edge_tts": edge_count,
+        "fallback_reason": fallback_reason,
     }
