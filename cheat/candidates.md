@@ -109,3 +109,10 @@ https：//github.com/OpenSenseNova/SenseNova-U1/
 - 链接: https://x.com/TencentHunyuan/status/2053771684482851255
 
 腾讯混元Hy3预览版已开放早期体验，被描述为该系列最强模型。其核心设计面向现实世界有效性，而非单纯追求基准测试分数。模型具备处理复杂智能体任务的能力，采用256K上下文长度，并融合了快慢思维机制的混合专家架构。该模型基于重建的预训练和强化学习基础设施构建，旨在实现大规模应用下的高成本效益。
+<!-- cid:45b286c995dc -->
+## SenseNova U1图像生成模型登陆ComfyUI平台
+- 来源: trend:aihot
+- 时间: 2026-05-11T10:21:54.000Z
+- 链接: https://x.com/SenseTime_AI/status/2053782644492525847
+
+SenseNova U1图像生成模型现已在ComfyUI上可运行，并获得包括REBEL AI在内的评测者高度认可。REBEL AI发布的实践教程展示了该模型的部署工作流，并对其图像生成能力进行了真实场景测试。模型支持8步快速推理，生成速度极快，应用场景涵盖人像、超现实艺术、文字标志和生物设计等。相关资源已在Hugging Face、GitHub和Discord平台开放。
