@@ -68,11 +68,7 @@ def call_llm(
 
         except RateLimitError as e:
             last_error = e
-            retry_after = getattr(e, "retry_after", None) or getattr(e, "response", None)
-            if retry_after and hasattr(retry_after, "headers"):
-                wait = float(retry_after.headers.get("Retry-After", retry_delay_seconds))
-            else:
-                wait = retry_delay_seconds * (2 ** attempt)
+            wait = getattr(e, "retry_after", None) or (retry_delay_seconds * (2 ** attempt))
             if attempt < max_retries:
                 logger.warning(f"Rate limited, waiting {wait:.1f}s (attempt {attempt + 1}/{max_retries})")
                 time.sleep(wait)

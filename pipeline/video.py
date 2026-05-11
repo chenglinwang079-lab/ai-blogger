@@ -64,6 +64,7 @@ def render_video(script_id: str, config: dict) -> str:
     - 字幕烧录 + BGM 混音
     - 输出 dist/<script_id>/final.mp4
     """
+    from pipeline import validate_script_id
     from pipeline.subtitle import generate_srt
     from moviepy import (
         VideoClip,
@@ -72,6 +73,7 @@ def render_video(script_id: str, config: dict) -> str:
         CompositeAudioClip,
     )
 
+    validate_script_id(script_id)
     output_dir = Path(config["paths"]["output_dir"]) / script_id
     cheat_root = Path(config["paths"]["cheat_root"])
 

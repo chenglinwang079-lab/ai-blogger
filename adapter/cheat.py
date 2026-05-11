@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pipeline import validate_script_id
 from pipeline.llm_utils import call_llm, parse_llm_json
 
 
@@ -70,6 +71,8 @@ def score_script(script_text: str, rubric: dict, config: dict) -> dict:
     )
 
     result = parse_llm_json(response, ["dimensions"])
+    if not result["dimensions"]:
+        raise ValueError("LLM 返回空评分维度列表")
     scores = [d["score"] for d in result["dimensions"]]
     result["composite"] = round(sum(scores) / len(scores), 2)
 
@@ -82,6 +85,7 @@ def write_prediction(script_id: str, score: dict, prediction: dict, config: dict
     已存在 predictions/<script_id>.json 时拒绝覆盖，除非 force=True。
     同时写 cheat/predictions/<script_id>.json（机器源）和 .md（人工审阅）。
     """
+    validate_script_id(script_id)
     cheat_root = Path(config["paths"]["cheat_root"])
     pred_dir = cheat_root / "predictions"
     pred_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +132,7 @@ def retro(script_id: str, actual: dict, config: dict) -> dict:
 
     更新 .cheat-state.json（calibration_samples, last_retro_at）。
     """
+    validate_script_id(script_id)
     cheat_root = Path(config["paths"]["cheat_root"])
 
     # 读取预测

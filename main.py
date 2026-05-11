@@ -249,6 +249,8 @@ def cmd_export(args: argparse.Namespace, config: dict) -> None:
     if not args.script_id:
         logger.error("export 需要 --script-id")
         sys.exit(1)
+    from pipeline import validate_script_id
+    validate_script_id(args.script_id)
     logger.info(f"导出发布包: {args.script_id}")
     from pipeline.export_pkg import export_package
     result = export_package(args.script_id, config)
@@ -260,6 +262,9 @@ def cmd_retro(args: argparse.Namespace, config: dict) -> None:
     if not args.script_id and not args.title:
         logger.error("retro 需要 --script-id 或 --title")
         sys.exit(1)
+    if args.script_id:
+        from pipeline import validate_script_id
+        validate_script_id(args.script_id)
     actual = {
         "views": args.views,
         "likes": args.likes,

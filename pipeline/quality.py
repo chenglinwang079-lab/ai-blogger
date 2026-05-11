@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from pipeline import validate_script_id
 from pipeline.llm_utils import call_llm, parse_llm_json
 
 
@@ -19,6 +20,7 @@ def quality_check(script_id: str, config: dict) -> dict:
     """
     from adapter.cheat import load_rubric, score_script, write_prediction
 
+    validate_script_id(script_id)
     cheat_root = Path(config["paths"]["cheat_root"])
     script_dir = cheat_root / "scripts" / script_id
     draft_path = script_dir / "draft.md"
@@ -38,11 +40,6 @@ def quality_check(script_id: str, config: dict) -> dict:
     for attempt in range(max_rewrites + 1):
         score_result = score_script(script_text, rubric, config)
 
-        # 缓存打分
-        (script_dir / "score.json").write_text(
-            json.dumps(score_result, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
         if best_score is None or score_result["composite"] > best_score["composite"]:
             best_score = score_result
             best_text = script_text
@@ -51,7 +48,10 @@ def quality_check(script_id: str, config: dict) -> dict:
             # 先生成预测（可能失败），成功后再写文件
             prediction = _generate_prediction(script_text, score_result, config)
 
-            # 预测成功 → 写 final.md
+            # 预测成功 → 写 score.json + final.md（确保全部成功后才持久化）
+            (script_dir / "score.json").write_text(
+                json.dumps(score_result, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             (script_dir / "final.md").write_text(script_text, encoding="utf-8")
 
             # 写盲预测

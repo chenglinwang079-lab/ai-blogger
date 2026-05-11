@@ -1,6 +1,15 @@
+import re
+
 STEP_ORDER = ["topic", "script", "score", "predict", "tts", "render", "export"]
 
 _STEP_NEXT = {"tts": "render", "render": "export", "export": "done"}
+
+
+def validate_script_id(sid: str) -> str:
+    """校验 script_id 格式（12 位十六进制），防止路径遍历攻击。"""
+    if not re.match(r'^[a-f0-9]{12}$', sid):
+        raise ValueError(f"Invalid script_id: {sid!r}（必须为 12 位十六进制）")
+    return sid
 
 
 def update_manifest(script_dir, step: str) -> None:

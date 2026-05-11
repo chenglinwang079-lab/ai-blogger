@@ -99,8 +99,9 @@ def generate_audio(script_id: str, config: dict) -> dict:
     - OOM 降级：VoxCPM2 → edge-tts
     - 输出 dist/<script_id>/audio.wav + timestamps.json
     """
-    from pipeline import update_manifest
+    from pipeline import update_manifest, validate_script_id
 
+    validate_script_id(script_id)
     cheat_root = Path(config["paths"]["cheat_root"])
     script_dir = cheat_root / "scripts" / script_id
     output_dir = Path(config["paths"]["output_dir"]) / script_id

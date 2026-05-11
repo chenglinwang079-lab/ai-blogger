@@ -55,6 +55,8 @@ def export_package(script_id: str, config: dict) -> str:
 
     prediction.json 从 cheat/predictions/<script_id>.json 直接拷贝。
     """
+    from pipeline import validate_script_id
+    validate_script_id(script_id)
     output_dir = Path(config["paths"]["output_dir"]) / script_id
     cheat_root = Path(config["paths"]["cheat_root"])
 
@@ -66,6 +68,7 @@ def export_package(script_id: str, config: dict) -> str:
         shutil.copy2(pred_src, output_dir / "prediction.json")
 
     # 读取 manifest 生成 title.txt / description.txt
+    title = ""
     manifest_path = cheat_root / "scripts" / script_id / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
