@@ -1,0 +1,9 @@
+openai>=1.0
+requests
+moviepy
+srt
+Pillow
+numpy
+soundfile
+imageio-ffmpeg
+edge-tts

@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Secrets
+config.toml
+.env
+
+# Large binary outputs
+dist/
+*.wav
+*.mp4
+*.mp3
+test_tts.mp3
+
+# Cheat state (runtime)
+cheat/.cheat-state.json
+cheat/videos/
+cheat/predictions/
+cheat/scripts/

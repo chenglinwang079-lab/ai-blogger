@@ -1,0 +1,37 @@
+[api]
+openai_api_key = "your-api-key-here"
+openai_base_url = "https://api.xiaomimimo.com/v1"
+
+[models]
+script_model = "mimo-v2.5-pro"
+score_model = "mimo-v2.5-pro"
+predict_model = "mimo-v2.5-pro"
+
+[paths]
+voxcpm_model = "D:/voxcpm/pretrained_models/VoxCPM2"
+fonts_dir = "assets/fonts"
+bgm_dir = "assets/bgm"
+output_dir = "dist"
+cheat_root = "cheat"
+
+[quality]
+score_scale = 10
+score_threshold = 7.5
+max_rewrites = 3
+
+[llm]
+max_retries = 3
+retry_delay_seconds = 5
+timeout_seconds = 60
+
+[tts]
+backend = "voxcpm2"
+fallback = "edge-tts"
+max_segment_chars = 100
+sample_rate = 48000
+
+[video]
+resolution = "1080x1920"
+bgm_volume = 0.15
+subtitle_font = "Microsoft YaHei"
+subtitle_fontsize = 42
