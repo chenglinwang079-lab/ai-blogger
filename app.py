@@ -375,7 +375,7 @@ def tts_gen_cb(script_id_choice: str):
     )
 
 
-def render_gen_cb(script_id_choice: str):
+def render_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
     """视频渲染（generator yield 进度）。"""
     sid = parse_script_id(script_id_choice)
     if not sid:
@@ -384,7 +384,13 @@ def render_gen_cb(script_id_choice: str):
 
     yield "⏳ 正在渲染视频...", None
 
-    result, err = safe_call(render_video, sid, config)
+    # 临时覆盖 render_mode
+    cfg = dict(config)
+    cfg["video"] = dict(config["video"])
+    cfg["video"]["render_mode"] = render_mode
+    cfg["paths"] = dict(config["paths"])
+
+    result, err = safe_call(render_video, sid, cfg)
     if err:
         yield f"```\n{err}\n```", None
         return
@@ -392,7 +398,7 @@ def render_gen_cb(script_id_choice: str):
     yield f"✅ 视频完成\npath: {result}", existing_path(result)
 
 
-def pipeline_gen_cb(script_id_choice: str):
+def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
     """TTS + 渲染一键执行（generator 顺序 yield）。"""
     sid = parse_script_id(script_id_choice)
     if not sid:
@@ -419,9 +425,15 @@ def pipeline_gen_cb(script_id_choice: str):
         f"duration: {tts_result['duration']}s"
     )
 
+    # 临时覆盖 render_mode
+    cfg = dict(config)
+    cfg["video"] = dict(config["video"])
+    cfg["video"]["render_mode"] = render_mode
+    cfg["paths"] = dict(config["paths"])
+
     # Render
     yield "⏳ [2/2] 正在渲染视频...", existing_path(tts_result["audio_path"]), None, audio_info
-    render_result, render_err = safe_call(render_video, sid, config)
+    render_result, render_err = safe_call(render_video, sid, cfg)
     if render_err:
         yield f"```\n{render_err}\n```", existing_path(tts_result["audio_path"]), None, audio_info
         return
@@ -629,6 +641,12 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 tts_duration = gr.Textbox(label="Duration", interactive=False)
 
             gr.Markdown("### 视频渲染")
+            render_mode = gr.Radio(
+                choices=["gradient", "footage"],
+                value="gradient",
+                label="渲染模式",
+                info="渐变背景 / 本地素材混剪",
+            )
             btn_render = gr.Button("渲染视频", variant="primary")
             render_status = gr.Markdown()
             render_video_out = gr.Video(label="视频预览")
@@ -651,13 +669,13 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             )
             btn_render.click(
                 fn=render_gen_cb,
-                inputs=[gen_dropdown],
+                inputs=[gen_dropdown, render_mode],
                 outputs=[render_status, render_video_out],
                 concurrency_limit=1,
             )
             btn_pipeline.click(
                 fn=pipeline_gen_cb,
-                inputs=[gen_dropdown],
+                inputs=[gen_dropdown, render_mode],
                 outputs=[pipeline_status, pipeline_audio, pipeline_video, pipeline_info],
                 concurrency_limit=1,
             )

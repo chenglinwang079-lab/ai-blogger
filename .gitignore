@@ -21,6 +21,14 @@ Thumbs.db
 config.toml
 .env
 
+# Footage 素材（大文件不入库）
+assets/footage/**/*.mp4
+assets/footage/**/*.mov
+assets/footage/**/*.webm
+assets/footage/**/*.avi
+!assets/footage/README.md
+!assets/footage/**/.gitkeep
+
 # Large binary outputs
 dist/
 *.wav

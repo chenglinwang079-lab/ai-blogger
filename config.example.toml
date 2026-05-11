@@ -11,6 +11,7 @@ predict_model = "mimo-v2.5-pro"
 voxcpm_model = "D:/voxcpm/pretrained_models/VoxCPM2"
 fonts_dir = "assets/fonts"
 bgm_dir = "assets/bgm"
+footage_dir = "assets/footage"
 output_dir = "dist"
 cheat_root = "cheat"
 
@@ -35,3 +36,4 @@ resolution = "1080x1920"
 bgm_volume = 0.15
 subtitle_font = "Microsoft YaHei"
 subtitle_fontsize = 42
+render_mode = "gradient"   # "gradient" | "footage"

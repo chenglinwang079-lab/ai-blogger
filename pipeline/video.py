@@ -67,6 +67,22 @@ def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: Im
     return lines
 
 
+def _cover_frame(frame: np.ndarray, width: int, height: int) -> Image.Image:
+    """将视频帧 cover 缩放到目标尺寸（按短边缩放 + 居中裁剪）。"""
+    frame = np.asarray(frame)
+    if frame.dtype != np.uint8:
+        frame = np.clip(frame, 0, 255).astype(np.uint8)
+    img = Image.fromarray(frame).convert("RGB")
+    if img.width <= 0 or img.height <= 0:
+        raise ValueError(f"Invalid footage frame size: {img.width}x{img.height}")
+    scale = max(width / img.width, height / img.height)
+    new_size = (int(img.width * scale), int(img.height * scale))
+    img = img.resize(new_size, Image.LANCZOS)
+    left = (img.width - width) // 2
+    top = (img.height - height) // 2
+    return img.crop((left, top, left + width, top + height))
+
+
 def _create_background(width: int, height: int) -> np.ndarray:
     """深色渐变背景。"""
     img = np.zeros((height, width, 3), dtype=np.uint8)
@@ -180,19 +196,64 @@ def render_video(script_id: str, config: dict) -> str:
     # 预生成渐变背景（只生成一次，每帧复用）
     bg_image = Image.fromarray(_create_background(width, height))
 
+    # 素材池加载
+    render_mode = config["video"].get("render_mode", "gradient")
+    footage_clips = []
+    footage_hits = 0
+
+    if render_mode == "footage":
+        from pipeline.footage import index_footage, match_footage
+        from moviepy import VideoFileClip
+
+        footage_dir = Path(config["paths"].get("footage_dir", "assets/footage"))
+        if not footage_dir.is_absolute():
+            footage_dir = _PROJECT_ROOT / footage_dir
+        idx = index_footage(footage_dir)
+        logger.info(f"素材索引: {len(idx)} 个文件")
+
+        for i, ts in enumerate(timestamps):
+            kw = keywords[i] if i < len(keywords) else ""
+            path = match_footage(kw, idx)
+            if path:
+                try:
+                    clip = VideoFileClip(path)
+                    if not clip.duration or clip.duration <= 0:
+                        logger.warning(f"素材 duration 无效: {path}")
+                        clip.close()
+                        footage_clips.append(None)
+                        continue
+                    footage_clips.append(clip)
+                    footage_hits += 1
+                except Exception as e:
+                    logger.warning(f"素材加载失败 {path}: {e}")
+                    footage_clips.append(None)
+            else:
+                footage_clips.append(None)
+
+        logger.info(f"素材命中: {footage_hits}/{len(timestamps)} 段")
+
     # 计算总时长
     total_duration = timestamps[-1]["end"] if timestamps else 10
 
     def make_frame(t):
-        # 找到当前时间段
         keyword = ""
         text = ""
+        bg = bg_image
         for i, ts in enumerate(timestamps):
             if ts["start"] <= t < ts["end"]:
                 keyword = keywords[i] if i < len(keywords) else ""
                 text = ts["text"]
+                if i < len(footage_clips) and footage_clips[i] is not None:
+                    try:
+                        clip = footage_clips[i]
+                        if clip.duration and clip.duration > 0:
+                            ft = (t - ts["start"]) % clip.duration
+                            frame = clip.get_frame(ft)
+                            bg = _cover_frame(frame, width, height)
+                    except Exception:
+                        pass  # fallback to gradient
                 break
-        return _render_frame(width, height, text, keyword, font_path, config["video"]["subtitle_fontsize"], bg_image)
+        return _render_frame(width, height, text, keyword, font_path, config["video"]["subtitle_fontsize"], bg)
 
     video = VideoClip(make_frame, duration=total_duration)
     audio_clip = None
@@ -242,7 +303,11 @@ def render_video(script_id: str, config: dict) -> str:
             audio_clip.close()
         if bgm_clip is not None:
             bgm_clip.close()
-        video.close()
+        for fc in footage_clips:
+            if fc is not None:
+                fc.close()
+        if video is not None:
+            video.close()
 
     # 更新 manifest
     from pipeline import update_manifest
