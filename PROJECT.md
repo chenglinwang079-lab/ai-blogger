@@ -127,6 +127,8 @@ D:\ai-blogger\
 ├── assets/
 │   ├── fonts/
 │   └── bgm/
+│       ├── bgm_catalog.json         # BGM 配置（.gitignore，本地维护）
+│       └── bgm_catalog.example.json # BGM 配置模板（入库）
 └── skills/
     └── cheat-on-content/          # 可选：克隆的 skill
 ```
@@ -270,11 +272,13 @@ def generate_audio(script_id: str, config: dict) -> dict:
 
 ### pipeline/video.py
 ```python
-def render_video(script_id: str, config: dict) -> str:
+def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mute: bool = False) -> str:
     """模板视频（内部调用 subtitle.py 生成 SRT）
     - 深色渐变背景 + 关键词大字 + 标题卡
     - 字幕烧录 + BGM 混音
     - 输出 dist/<script_id>/final.mp4
+    - bgm_id: 手动指定 BGM id（无效时回退自动匹配）
+    - mute: 静音模式（不加 BGM）
     """
 ```
 
@@ -307,7 +311,13 @@ python main.py step score --script-id f6e5d4c3b2a1
 python main.py step predict --script-id f6e5d4c3b2a1          # 补写/重生成预测（已存在则拒绝，除非 --force）
 python main.py step tts --script-id f6e5d4c3b2a1
 python main.py step render --script-id f6e5d4c3b2a1
+python main.py step render --script-id f6e5d4c3b2a1 --mute            # 静音渲染
+python main.py step render --script-id f6e5d4c3b2a1 --bgm-id xxx      # 手动指定 BGM
 python main.py export --script-id f6e5d4c3b2a1
+
+# BGM 管理
+python main.py bgm list                    # 列出可用 BGM
+python main.py bgm suggest --script-id xxx # 推荐 BGM（自动匹配）
 
 # 复盘
 python main.py retro --script-id f6e5d4c3b2a1 --views 5000 --likes 200 --comments 30
@@ -519,6 +529,8 @@ min_height = 1280
 - ~~素材混剪（Pexels/Pixabay）~~ ✅ Phase H 已完成
 - ~~素材池质量与命中率优化~~ ✅ Phase I 已完成
 - ~~运营闭环基础版~~ ✅ Phase J 已完成
+- ~~缩略图质量升级~~ ✅ Phase K-1 已完成
+- ~~BGM 智能匹配~~ ✅ Phase K-2 / K-2.1 已完成
 - 数字人口播（Wav2Lip/MuseTalk）
 - Playwright 自动发布
 - 每日定时生成
@@ -633,4 +645,55 @@ python main.py export --script-id <id> --all-platforms
 
 ### 下一步
 
-Phase K-1：缩略图质量升级 — 平台适配封面已生成，提升封面点击率直接影响 performance/retro 数据质量。
+Phase K-2.1 完成，进入下一阶段规划。
+
+## Phase K：质量升级 ✅
+
+### K-1：缩略图质量升级 ✅
+
+视觉层次、3-stop 渐变、描边效果、accent line、底部遮罩、像素级换行、4 级字体 fallback、平台标题源。
+
+### K-2：BGM 智能匹配 ✅
+
+catalog 加载 → 脚本情绪推断（4 mood: tech/tense/warm/upbeat）→ 匹配链（mood → energy → first_available）→ CLI `bgm suggest` → WebUI 推荐展示。
+
+### K-2.1：BGM 手动选择与预览 ✅
+
+三种控制模式：自动匹配 / 手动指定 / 静音。
+
+| 组件 | 改动 |
+|------|------|
+| `pipeline/bgm.py` | `list_available_bgm()` + `resolve_bgm_by_id()` |
+| `pipeline/video.py` | `render_video(bgm_id, mute)` + render_report 追加 BGM mode/id/reason |
+| `main.py` | `step --bgm-id`/`--mute` + `bgm list` |
+| `app.py` | Radio + Dropdown + Audio 预览 + mode 切换回调 |
+
+render_report.json BGM 字段：
+```json
+{"mode": "manual", "id": "iceman_instrumental_01", "reason": null}
+```
+
+mode 枚举：`mute` | `manual` | `auto_fallback` | `auto`
+
+### BGM 本地配置
+
+`assets/bgm/bgm_catalog.json`（.gitignore，不入库）：
+
+```json
+[
+  {
+    "id": "iceman_instrumental_01",
+    "path": "D:/CloudMusic/电台节目/Mkuag - Drake - ICEMAN (Instrumental).mp3",
+    "mood": "tense",
+    "energy": "high",
+    "bpm": 140,
+    "tags": ["说唱", "节奏", "冲突", "科技", "紧张"],
+    "enabled": true
+  }
+]
+```
+
+- `path` 支持绝对路径和相对路径（相对于 `assets/bgm/`）
+- `mood` 枚举：tech / tense / warm / upbeat
+- `energy` 枚举：low / medium / high
+- `enabled: false` 可临时禁用条目
