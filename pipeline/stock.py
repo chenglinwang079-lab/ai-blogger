@@ -12,86 +12,10 @@ from pathlib import Path
 
 import requests
 
-from pipeline.footage import KEYWORD_ALIASES, index_footage, match_footage_with_reason
+from pipeline.footage import index_footage, match_footage_with_reason
+from pipeline.keyword_aliases import ALIASES as KEYWORD_ALIASES, SEARCH_QUERIES as _STOCK_KEYWORD_ALIASES
 
 logger = logging.getLogger(__name__)
-
-# ── 扩展别名表（stock 专用，比 footage 的更细） ──────────────────────
-_STOCK_KEYWORD_ALIASES: dict[str, str] = {
-    # 科技 / AI
-    "发布会": "launch event",
-    "办公": "office work",
-    "手机": "smartphone",
-    "电脑": "computer",
-    "服务器": "server",
-    "芯片": "chip semiconductor",
-    "代码": "coding programming",
-    "机器人": "robot",
-    "数据": "data visualization",
-    "人工智能": "artificial intelligence",
-    "模型": "AI model",
-    "界面": "user interface",
-    "搜索": "search engine",
-    "网络": "network internet",
-    "自动化": "automation",
-    "浏览器": "web browser",
-    "鼠标": "computer mouse",
-    "键盘": "keyboard typing",
-    "点击": "click interface",
-    "操作": "interface automation",
-    "插件": "plugin code",
-    "图标": "icon UI",
-    "表单": "form data",
-    "填写": "form filling",
-    "页面": "web page",
-    "下单": "online shopping",
-    "语音": "voice AI",
-    "指令": "command code",
-    "科技": "technology",
-    "公司": "company tech",
-    "阅读": "reading data",
-    "流程": "workflow automation",
-    "logo": "logo brand",
-    # 生活 / 场景
-    "会议": "meeting conference",
-    "工作": "work office",
-    "学习": "studying learning",
-    "城市": "city skyline",
-    "交通": "traffic transportation",
-    "医院": "hospital medical",
-    "学校": "school education",
-    "工厂": "factory manufacturing",
-    "实验室": "laboratory science",
-    "超市": "supermarket shopping",
-    "餐厅": "restaurant food",
-    "健身房": "gym fitness",
-    "机场": "airport travel",
-    "银行": "bank finance",
-    "图书馆": "library books",
-    # 人物 / 动作
-    "程序员": "programmer developer",
-    "工程师": "engineer",
-    "医生": "doctor medical",
-    "学生": "student learning",
-    "演讲": "presentation speech",
-    "握手": "handshake deal",
-    "讨论": "discussion team",
-    "思考": "thinking brain",
-    "庆祝": "celebration",
-    # 抽象 / 概念
-    "未来": "futuristic",
-    "创新": "innovation",
-    "增长": "growth chart",
-    "安全": "security shield",
-    "连接": "connection network",
-    "竞争": "competition",
-    "合作": "partnership cooperation",
-    "效率": "efficiency productivity",
-    "隐私": "privacy protection",
-    "算法": "algorithm",
-    "区块链": "blockchain",
-    "量子": "quantum computing",
-}
 
 # ── 工具函数 ────────────────────────────────────────────────────────
 

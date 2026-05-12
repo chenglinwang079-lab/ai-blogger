@@ -4,41 +4,9 @@ from pathlib import Path
 import random
 import re
 
-_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".avi"}
+from pipeline.keyword_aliases import ALIASES as KEYWORD_ALIASES
 
-# 中文关键词 → 英文 tag 映射（stock.py 也用）
-KEYWORD_ALIASES = {
-    "芯片": {"chip", "hardware"},
-    "代码": {"code", "programming"},
-    "机器人": {"robot"},
-    "数据": {"data"},
-    "人工智能": {"ai"},
-    "模型": {"ai", "model"},
-    "界面": {"ui", "interface"},
-    "搜索": {"search"},
-    "网络": {"network", "internet"},
-    "自动化": {"automation"},
-    # 浏览器 / 交互
-    "浏览器": {"browser", "internet", "web"},
-    "鼠标": {"mouse", "data", "interface"},
-    "键盘": {"keyboard", "code"},
-    "点击": {"interface", "ui"},
-    "操作": {"interface", "automation"},
-    "插件": {"code", "plugin"},
-    "图标": {"ui", "interface"},
-    "表单": {"data", "interface"},
-    "填写": {"data", "automation"},
-    "页面": {"web", "internet"},
-    "下单": {"automation", "data"},
-    # 语音 / AI
-    "语音": {"ai", "voice"},
-    "指令": {"code", "automation"},
-    "科技": {"ai", "tech"},
-    "公司": {"ai", "tech"},
-    "阅读": {"data", "ai"},
-    "流程": {"data", "automation"},
-    "logo": {"ai", "tech"},
-}
+_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".avi"}
 
 
 def index_footage(footage_dir: Path) -> list[dict]:
