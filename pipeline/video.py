@@ -93,7 +93,7 @@ def _render_frame(
     return np.array(img)
 
 
-def render_video(script_id: str, config: dict) -> str:
+def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mute: bool = False) -> str:
     """模板视频渲染。
 
     - 深色渐变背景 + 关键词大字 + 标题卡
@@ -225,6 +225,8 @@ def render_video(script_id: str, config: dict) -> str:
     video = VideoClip(make_frame, duration=total_duration)
     audio_clip = None
     bgm_clip = None
+    bgm_path = None
+    bgm_info = {}
 
     try:
         # 混入音频
@@ -232,10 +234,19 @@ def render_video(script_id: str, config: dict) -> str:
         if audio_path.exists():
             audio_clip = AudioFileClip(str(audio_path))
 
-            # BGM 混音（智能匹配）
+            # BGM 混音（手动/静音/自动）
             from pipeline.bgm import select_bgm
             bgm_volume = config["video"].get("bgm_volume", 0.15)
-            bgm_path, bgm_info = select_bgm(script_id, config)
+            if mute:
+                bgm_path, bgm_info = None, {"reason": "muted"}
+            elif bgm_id:
+                from pipeline.bgm import resolve_bgm_by_id
+                bgm_path, bgm_info = resolve_bgm_by_id(bgm_id, config)
+                if not bgm_path:
+                    logger.warning(f"BGM id '{bgm_id}' 不可用，回退自动匹配")
+                    bgm_path, bgm_info = select_bgm(script_id, config)
+            else:
+                bgm_path, bgm_info = select_bgm(script_id, config)
             if bgm_path:
                 logger.info(f"BGM: {bgm_info['bgm_id']} (mood={bgm_info['mood']}, reason={bgm_info['reason']})")
                 bgm_clip = AudioFileClip(str(bgm_path))
@@ -288,6 +299,20 @@ def render_video(script_id: str, config: dict) -> str:
         "abstract_fallback": abstract_fb,
         "gradient_fallback": gradient_fb,
         "segments": footage_segments,
+    }
+    # BGM mode 判定：手动指定成功才记 "manual"，回退后记 "auto_fallback"
+    if mute:
+        bgm_mode = "mute"
+    elif bgm_id and bgm_path and (bgm_info.get("id") == bgm_id or bgm_info.get("bgm_id") == bgm_id):
+        bgm_mode = "manual"
+    elif bgm_id:
+        bgm_mode = "auto_fallback"
+    else:
+        bgm_mode = "auto"
+    report["bgm"] = {
+        "mode": bgm_mode,
+        "id": bgm_info.get("bgm_id") or bgm_info.get("id") or bgm_id,
+        "reason": bgm_info.get("reason"),
     }
     report_path = output_dir / "render_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

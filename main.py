@@ -117,7 +117,7 @@ def _load_manifest(script_id: str, config: dict) -> dict | None:
     return None
 
 
-def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = None, config: dict | None = None, force: bool = False) -> dict | None:
+def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = None, config: dict | None = None, force: bool = False, bgm_id: str | None = None, mute: bool = False) -> dict | None:
     """执行单步，返回结果 dict。"""
     from pipeline import topic as topic_mod
     from pipeline import script as script_mod
@@ -156,7 +156,7 @@ def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = N
         if not script_id:
             logger.error("render 步骤需要 --script-id")
             return None
-        return {"video_path": video_mod.render_video(script_id, config)}
+        return {"video_path": video_mod.render_video(script_id, config, bgm_id=bgm_id, mute=mute)}
 
     elif step == "export":
         if not script_id:
@@ -235,6 +235,8 @@ def cmd_step(args: argparse.Namespace, config: dict) -> None:
         script_id=args.script_id,
         config=config,
         force=getattr(args, "force", False),
+        bgm_id=getattr(args, "bgm_id", None),
+        mute=getattr(args, "mute", False),
     )
 
     if result is None:
@@ -667,7 +669,21 @@ def cmd_bgm(args: argparse.Namespace, config: dict) -> None:
 
     action = getattr(args, "bgm_action", None)
 
-    if action == "suggest":
+    if action == "list":
+        from pipeline.bgm import list_available_bgm
+        entries = list_available_bgm(config)
+        if not entries:
+            print("\n无可用 BGM（catalog 为空或文件不存在）。")
+            print("请参考 assets/bgm/bgm_catalog.example.json 创建 assets/bgm/bgm_catalog.json 并添加素材。")
+        else:
+            print(f"\n=== 可用 BGM ({len(entries)} 首) ===")
+            for e in entries:
+                tags = ", ".join(e.get("tags", []))
+                bpm = e.get("bpm", "?")
+                print(f"  {e['id']:<20s} {e.get('mood','?'):<8s} {e.get('energy','?'):<8s} {bpm}bpm  {tags}")
+        print()
+
+    elif action == "suggest":
         if not args.script_id:
             logger.error("suggest 需要 --script-id")
             sys.exit(1)
@@ -740,6 +756,8 @@ def main():
     p_step.add_argument("--take", type=int, default=10, help="选题数量")
     p_step.add_argument("--script-id", type=str, help="脚本 ID")
     p_step.add_argument("--force", action="store_true", help="强制重跑")
+    p_step.add_argument("--bgm-id", type=str, default=None, help="手动指定 BGM ID")
+    p_step.add_argument("--mute", action="store_true", help="静音（不加 BGM）")
     p_step.set_defaults(func=cmd_step)
 
     # export
@@ -843,10 +861,12 @@ def main():
     p_bgm_suggest = bgm_sub.add_parser("suggest", help="推荐 BGM")
     p_bgm_suggest.add_argument("--script-id", required=True, help="脚本 ID")
     p_bgm_suggest.set_defaults(func=cmd_bgm)
+    p_bgm_list = bgm_sub.add_parser("list", help="列出可用 BGM")
+    p_bgm_list.set_defaults(func=cmd_bgm)
 
     args = parser.parse_args()
     config = load_config(args.config)
-    validate_config(config, require_api=(args.command not in ("status", "stock", "footage", "queue", "performance", "retro", "bgm")))
+    validate_config(config, require_api=(args.command not in ("status", "stock", "footage", "queue", "performance", "retro", "bgm", "step")))
     ensure_directories(config)
 
     args.func(args, config)
