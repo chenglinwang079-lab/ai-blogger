@@ -212,7 +212,7 @@ def render_video(script_id: str, config: dict) -> str:
         logger.info(f"素材索引: {len(idx)} 个文件")
 
         for i, ts in enumerate(timestamps):
-            kw = keywords[i] if i < len(keywords) else ""
+            kw = keywords[i] if i < len(keywords) and keywords[i] else "abstract"
             path = match_footage(kw, idx)
             if path:
                 try:
@@ -241,7 +241,7 @@ def render_video(script_id: str, config: dict) -> str:
         bg = bg_image
         for i, ts in enumerate(timestamps):
             if ts["start"] <= t < ts["end"]:
-                keyword = keywords[i] if i < len(keywords) else ""
+                keyword = keywords[i] if i < len(keywords) and keywords[i] else "abstract"
                 text = ts["text"]
                 if i < len(footage_clips) and footage_clips[i] is not None:
                     try:
