@@ -200,6 +200,7 @@ def render_video(script_id: str, config: dict) -> str:
     render_mode = config["video"].get("render_mode", "gradient")
     footage_clips = []
     footage_hits = 0
+    footage_segments = []  # 每段素材使用记录
 
     if render_mode == "footage":
         from pipeline.footage import index_footage, match_footage
@@ -212,7 +213,8 @@ def render_video(script_id: str, config: dict) -> str:
         logger.info(f"素材索引: {len(idx)} 个文件")
 
         for i, ts in enumerate(timestamps):
-            kw = keywords[i] if i < len(keywords) and keywords[i] else "abstract"
+            original_kw = keywords[i] if i < len(keywords) else ""
+            kw = original_kw if original_kw else "abstract"
             path = match_footage(kw, idx)
             if path:
                 try:
@@ -221,14 +223,30 @@ def render_video(script_id: str, config: dict) -> str:
                         logger.warning(f"素材 duration 无效: {path}")
                         clip.close()
                         footage_clips.append(None)
+                        footage_segments.append({
+                            "index": i, "keyword": kw, "footage": None,
+                            "source": "gradient_fallback",
+                        })
                         continue
                     footage_clips.append(clip)
                     footage_hits += 1
+                    footage_segments.append({
+                        "index": i, "keyword": kw, "footage": path,
+                        "source": "abstract_fallback" if not original_kw else "matched",
+                    })
                 except Exception as e:
                     logger.warning(f"素材加载失败 {path}: {e}")
                     footage_clips.append(None)
+                    footage_segments.append({
+                        "index": i, "keyword": kw, "footage": None,
+                        "source": "gradient_fallback",
+                    })
             else:
                 footage_clips.append(None)
+                footage_segments.append({
+                    "index": i, "keyword": kw, "footage": None,
+                    "source": "gradient_fallback",
+                })
 
         logger.info(f"素材命中: {footage_hits}/{len(timestamps)} 段")
 
@@ -308,6 +326,29 @@ def render_video(script_id: str, config: dict) -> str:
                 fc.close()
         if video is not None:
             video.close()
+
+    # 写入渲染报告
+    if not footage_segments:
+        footage_segments = [
+            {"index": i, "keyword": keywords[i] if i < len(keywords) else "", "footage": None, "source": "gradient"}
+            for i in range(len(timestamps))
+        ]
+    matched = sum(1 for s in footage_segments if s["source"] == "matched")
+    abstract_fb = sum(1 for s in footage_segments if s["source"] == "abstract_fallback")
+    gradient_fb = sum(1 for s in footage_segments if s["source"] in ("gradient_fallback", "gradient"))
+    report = {
+        "render_mode": render_mode,
+        "segments_total": len(timestamps),
+        "footage_hits": footage_hits,
+        "matched": matched,
+        "abstract_fallback": abstract_fb,
+        "gradient_fallback": gradient_fb,
+        "segments": footage_segments,
+    }
+    report_path = output_dir / "render_report.json"
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    if render_mode == "footage":
+        logger.info(f"渲染报告: {matched} 关键词命中, {abstract_fb} abstract fallback, {gradient_fb} 渐变 fallback")
 
     # 更新 manifest
     from pipeline import update_manifest

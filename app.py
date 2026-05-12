@@ -375,14 +375,31 @@ def tts_gen_cb(script_id_choice: str):
     )
 
 
+def _read_render_report(sid: str) -> str:
+    """读取 render_report.json，返回命中率摘要。"""
+    report_path = OUTPUT_DIR / sid / "render_report.json"
+    if not report_path.exists():
+        return ""
+    try:
+        r = json.loads(report_path.read_text("utf-8"))
+        if r.get("render_mode") != "footage":
+            return ""
+        return (
+            f"\n\n素材命中: {r['footage_hits']}/{r['segments_total']}\n"
+            f"关键词命中: {r['matched']}  |  abstract fallback: {r['abstract_fallback']}  |  渐变 fallback: {r['gradient_fallback']}"
+        )
+    except Exception:
+        return ""
+
+
 def render_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
     """视频渲染（generator yield 进度）。"""
     sid = parse_script_id(script_id_choice)
     if not sid:
-        yield "❌ 请选择脚本", None
+        yield "❌ 请选择脚本", None, ""
         return
 
-    yield "⏳ 正在渲染视频...", None
+    yield "⏳ 正在渲染视频...", None, ""
 
     # 临时覆盖 render_mode
     cfg = dict(config)
@@ -392,10 +409,11 @@ def render_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
 
     result, err = safe_call(render_video, sid, cfg)
     if err:
-        yield f"```\n{err}\n```", None
+        yield f"```\n{err}\n```", None, ""
         return
 
-    yield f"✅ 视频完成\npath: {result}", existing_path(result)
+    report_info = _read_render_report(sid)
+    yield f"✅ 视频完成\npath: {result}{report_info}", existing_path(result), report_info
 
 
 def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
@@ -438,11 +456,13 @@ def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
         yield f"```\n{render_err}\n```", existing_path(tts_result["audio_path"]), None, audio_info
         return
 
+    report_info = _read_render_report(sid)
+    full_info = audio_info + report_info
     yield (
-        f"✅ 全部完成\n{audio_info}\nvideo: {render_result}",
+        f"✅ 全部完成\n{audio_info}\nvideo: {render_result}{report_info}",
         existing_path(tts_result["audio_path"]),
         existing_path(render_result),
-        audio_info,
+        full_info,
     )
 
 
@@ -649,7 +669,9 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             )
             btn_render = gr.Button("渲染视频", variant="primary")
             render_status = gr.Markdown()
-            render_video_out = gr.Video(label="视频预览")
+            with gr.Row():
+                render_video_out = gr.Video(label="视频预览")
+                render_report = gr.Textbox(label="素材命中", interactive=False, lines=3)
 
             gr.Markdown("### 一键执行")
             btn_pipeline = gr.Button("TTS + 渲染一键执行", variant="stop")
@@ -670,7 +692,7 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             btn_render.click(
                 fn=render_gen_cb,
                 inputs=[gen_dropdown, render_mode],
-                outputs=[render_status, render_video_out],
+                outputs=[render_status, render_video_out, render_report],
                 concurrency_limit=1,
             )
             btn_pipeline.click(
