@@ -356,7 +356,10 @@ def _download_video(item: dict, dest_dir: Path, config: dict) -> str | None:
 
     # 校验尺寸/时长
     try:
-        from moviepy.editor import VideoFileClip
+        try:
+            from moviepy import VideoFileClip
+        except ImportError:
+            from moviepy.editor import VideoFileClip
 
         with VideoFileClip(str(part_path)) as clip:
             stock = config.get("stock", {})
