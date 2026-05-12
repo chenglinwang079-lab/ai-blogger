@@ -18,6 +18,26 @@ _KEYWORD_ALIASES = {
     "搜索": {"search"},
     "网络": {"network", "internet"},
     "自动化": {"automation"},
+    # 浏览器 / 交互
+    "浏览器": {"browser", "internet", "web"},
+    "鼠标": {"mouse", "data", "interface"},
+    "键盘": {"keyboard", "code"},
+    "点击": {"interface", "ui"},
+    "操作": {"interface", "automation"},
+    "插件": {"code", "plugin"},
+    "图标": {"ui", "interface"},
+    "表单": {"data", "interface"},
+    "填写": {"data", "automation"},
+    "页面": {"web", "internet"},
+    "下单": {"automation", "data"},
+    # 语音 / AI
+    "语音": {"ai", "voice"},
+    "指令": {"code", "automation"},
+    "科技": {"ai", "tech"},
+    "公司": {"ai", "tech"},
+    "阅读": {"data", "ai"},
+    "流程": {"data", "automation"},
+    "logo": {"ai", "tech"},
 }
 
 
