@@ -83,6 +83,7 @@ def ensure_directories(config: dict) -> None:
         cheat_root / "scripts",
         cheat_root / "predictions",
         cheat_root / "videos",
+        cheat_root / "daily",
         output_dir,
         PROJECT_ROOT / "assets" / "fonts",
         PROJECT_ROOT / "assets" / "bgm",
@@ -755,6 +756,88 @@ def cmd_style(args: argparse.Namespace, config: dict) -> None:
         sys.exit(1)
 
 
+def cmd_daily(args: argparse.Namespace, config: dict) -> None:
+    """daily 命令：每日推荐管理。"""
+    from pipeline.recommend import recommend_topics, load_recommendations
+
+    action = getattr(args, "daily_action", "recommend")
+
+    if action == "recommend":
+        result = recommend_topics(
+            config,
+            category=getattr(args, "category", "ai-models"),
+            take=getattr(args, "take", 15),
+            top_n=getattr(args, "top", 3),
+            force=getattr(args, "force", False),
+        )
+        recs = result.get("recommendations", [])
+        error = result.get("error")
+
+        if error and not recs:
+            print(f"\n⚠️ {error}")
+            print(f"候选数: {result.get('candidates_fetched', 0)}")
+            return
+
+        if not recs:
+            print("\n无推荐结果")
+            return
+
+        print(f"\n{'='*60}")
+        print(f"今日推荐 Top {len(recs)} ({result.get('category', '?')})")
+        print(f"生成时间: {result.get('generated_at', '?')[:19]}")
+        print(f"候选数: {result.get('candidates_fetched', 0)}")
+        print(f"{'='*60}")
+        for i, r in enumerate(recs, 1):
+            score = r.get("score", {})
+            print(f"\n  #{i}  {r['title']}")
+            print(f"      composite: {score.get('composite', '?')}  "
+                  f"(v={score.get('virality', '?')} f={score.get('freshness', '?')} "
+                  f"a={score.get('audience_fit', '?')})")
+            print(f"      {r.get('reason', '')}")
+            if r.get("url"):
+                print(f"      {r['url']}")
+        print()
+
+    elif action == "show":
+        date_str = getattr(args, "date", None)
+        result = load_recommendations(config, date_str=date_str)
+
+        if not result:
+            d = date_str or "今天"
+            print(f"\n{d} 无推荐。请先运行: daily recommend")
+            return
+
+        recs = result.get("recommendations", [])
+        error = result.get("error")
+
+        if error and not recs:
+            print(f"\n⚠️ {error}")
+            print(f"生成时间: {result.get('generated_at', '?')[:19]}")
+            print(f"候选数: {result.get('candidates_fetched', 0)}")
+            return
+
+        if not recs:
+            print("\n推荐为空")
+            return
+
+        print(f"\n{'='*60}")
+        print(f"推荐 ({result.get('category', '?')}) — {result.get('generated_at', '?')[:19]}")
+        print(f"候选: {result.get('candidates_fetched', 0)} | 模型: {result.get('model', '?')}")
+        print(f"{'='*60}")
+        for i, r in enumerate(recs, 1):
+            score = r.get("score", {})
+            print(f"\n  #{i}  {r['title']}")
+            print(f"      composite: {score.get('composite', '?')}  "
+                  f"(v={score.get('virality', '?')} f={score.get('freshness', '?')} "
+                  f"a={score.get('audience_fit', '?')})")
+            print(f"      {r.get('reason', '')}")
+        print()
+
+    else:
+        logger.error(f"未知 daily 子命令: {action}")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ai-blogger",
@@ -895,9 +978,28 @@ def main():
     p_style_list = style_sub.add_parser("list", help="列出可用风格")
     p_style_list.set_defaults(func=cmd_style)
 
+    # daily
+    p_daily = subparsers.add_parser("daily", help="每日推荐")
+    daily_sub = p_daily.add_subparsers(dest="daily_action")
+    p_daily_rec = daily_sub.add_parser("recommend", help="生成今日推荐")
+    p_daily_rec.add_argument("--category", type=str, default="ai-models", help="选题分类")
+    p_daily_rec.add_argument("--take", type=int, default=15, help="候选数量")
+    p_daily_rec.add_argument("--top", type=int, default=3, help="推荐数量")
+    p_daily_rec.add_argument("--force", action="store_true", help="忽略缓存，重新生成")
+    p_daily_rec.set_defaults(func=cmd_daily)
+    p_daily_show = daily_sub.add_parser("show", help="查看今日推荐")
+    p_daily_show.add_argument("--date", type=str, default=None, help="日期（YYYY-MM-DD，默认今天）")
+    p_daily_show.set_defaults(func=cmd_daily)
+    p_daily.set_defaults(func=cmd_daily)
+
     args = parser.parse_args()
     config = load_config(args.config)
-    validate_config(config, require_api=(args.command not in ("status", "stock", "footage", "queue", "performance", "retro", "bgm", "step", "style")))
+    _no_api_commands = ("status", "stock", "footage", "queue", "performance", "retro", "bgm", "step", "style")
+    require_api = not (
+        args.command in _no_api_commands
+        or (args.command == "daily" and getattr(args, "daily_action", None) == "show")
+    )
+    validate_config(config, require_api=require_api)
     ensure_directories(config)
 
     args.func(args, config)
