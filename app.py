@@ -361,6 +361,25 @@ def bgm_info_cb(script_id_choice: str) -> str:
     return f"🎵 {bgm_id} | mood={mood} energy={energy} | 命中: {keywords} | {reason_labels.get(reason, reason)}"
 
 
+def refresh_bgm_choices() -> list[str]:
+    """返回可用 BGM id 列表（Dropdown choices）。"""
+    from pipeline.bgm import list_available_bgm
+    entries = list_available_bgm(config)
+    return [e["id"] for e in entries]
+
+
+def bgm_select_cb(bgm_id_val: str):
+    """BGM Dropdown 选择回调：更新 bgm_info_text + 预览音频。"""
+    if not bgm_id_val:
+        return gr.update(), None
+    from pipeline.bgm import resolve_bgm_by_id
+    path, info = resolve_bgm_by_id(bgm_id_val, config)
+    mood = info.get("mood", "?")
+    energy = info.get("energy", "?")
+    preview = str(path) if path else None
+    return f"🎵 {bgm_id_val} | mood={mood} energy={energy}", preview
+
+
 def tts_gen_cb(script_id_choice: str):
     """TTS 生成（generator yield 进度）。"""
     sid = parse_script_id(script_id_choice)
@@ -397,23 +416,30 @@ def tts_gen_cb(script_id_choice: str):
 
 
 def _read_render_report(sid: str) -> str:
-    """读取 render_report.json，返回命中率摘要。"""
+    """读取 render_report.json，返回命中率摘要 + BGM 信息。"""
     report_path = OUTPUT_DIR / sid / "render_report.json"
     if not report_path.exists():
         return ""
     try:
         r = json.loads(report_path.read_text("utf-8"))
-        if r.get("render_mode") != "footage":
-            return ""
-        return (
-            f"\n\n素材命中: {r['footage_hits']}/{r['segments_total']}\n"
-            f"关键词命中: {r['matched']}  |  abstract fallback: {r['abstract_fallback']}  |  渐变 fallback: {r['gradient_fallback']}"
-        )
+        parts = []
+        if r.get("render_mode") == "footage":
+            parts.append(
+                f"素材命中: {r['footage_hits']}/{r['segments_total']}\n"
+                f"关键词命中: {r['matched']}  |  abstract fallback: {r['abstract_fallback']}  |  渐变 fallback: {r['gradient_fallback']}"
+            )
+        bgm = r.get("bgm")
+        if bgm:
+            mode_labels = {"mute": "静音", "manual": "手动", "auto_fallback": "自动(回退)", "auto": "自动"}
+            mode_str = mode_labels.get(bgm.get("mode", ""), bgm.get("mode", ""))
+            bgm_id = bgm.get("id") or "-"
+            parts.append(f"BGM: {mode_str} | {bgm_id} | {bgm.get('reason', '')}")
+        return "\n\n" + "\n".join(parts) if parts else ""
     except Exception:
         return ""
 
 
-def render_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
+def render_gen_cb(script_id_choice: str, render_mode: str = "gradient", bgm_mode: str = "自动匹配", bgm_id: str | None = None):
     """视频渲染（generator yield 进度）。"""
     sid = parse_script_id(script_id_choice)
     if not sid:
@@ -428,7 +454,9 @@ def render_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
     cfg["video"]["render_mode"] = render_mode
     cfg["paths"] = dict(config["paths"])
 
-    result, err = safe_call(render_video, sid, cfg)
+    mute = (bgm_mode == "静音")
+    effective_bgm_id = bgm_id if bgm_mode == "手动选择" else None
+    result, err = safe_call(render_video, sid, cfg, bgm_id=effective_bgm_id, mute=mute)
     if err:
         yield f"```\n{err}\n```", None, ""
         return
@@ -469,7 +497,7 @@ def stock_fill_cb(script_id_choice: str):
     yield "\n".join(lines)
 
 
-def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
+def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient", bgm_mode: str = "自动匹配", bgm_id: str | None = None):
     """TTS + 渲染一键执行（generator 顺序 yield）。"""
     sid = parse_script_id(script_id_choice)
     if not sid:
@@ -503,8 +531,10 @@ def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
     cfg["paths"] = dict(config["paths"])
 
     # Render
+    mute = (bgm_mode == "静音")
+    effective_bgm_id = bgm_id if bgm_mode == "手动选择" else None
     yield "⏳ [2/2] 正在渲染视频...", existing_path(tts_result["audio_path"]), None, audio_info
-    render_result, render_err = safe_call(render_video, sid, cfg)
+    render_result, render_err = safe_call(render_video, sid, cfg, bgm_id=effective_bgm_id, mute=mute)
     if render_err:
         yield f"```\n{render_err}\n```", existing_path(tts_result["audio_path"]), None, audio_info
         return
@@ -1190,6 +1220,18 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
 
             gr.Markdown("### 视频渲染")
             bgm_info_text = gr.Textbox(label="BGM 推荐", interactive=False, max_lines=1)
+            bgm_mode = gr.Radio(
+                choices=["自动匹配", "手动选择", "静音"],
+                value="自动匹配",
+                label="BGM 模式",
+            )
+            bgm_dropdown = gr.Dropdown(
+                choices=[],
+                label="选择 BGM",
+                visible=False,
+                interactive=True,
+            )
+            bgm_preview = gr.Audio(label="BGM 预览", type="filepath", visible=False)
             render_mode = gr.Radio(
                 choices=["gradient", "footage"],
                 value="gradient",
@@ -1219,6 +1261,28 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 outputs=[bgm_info_text],
             )
 
+            # BGM 模式切换
+            def _bgm_mode_change(mode):
+                if mode == "手动选择":
+                    return gr.update(visible=True, choices=refresh_bgm_choices()), gr.update(visible=True), "请选择 BGM"
+                elif mode == "静音":
+                    return gr.update(visible=False), gr.update(visible=False), "🔇 静音模式"
+                else:  # 自动匹配
+                    return gr.update(visible=False), gr.update(visible=False), gr.update()
+
+            bgm_mode.change(
+                fn=_bgm_mode_change,
+                inputs=[bgm_mode],
+                outputs=[bgm_dropdown, bgm_preview, bgm_info_text],
+            )
+
+            # BGM Dropdown 选择 → 更新预览 + 信息
+            bgm_dropdown.change(
+                fn=bgm_select_cb,
+                inputs=[bgm_dropdown],
+                outputs=[bgm_info_text, bgm_preview],
+            )
+
             btn_tts.click(
                 fn=tts_gen_cb,
                 inputs=[gen_dropdown],
@@ -1233,13 +1297,13 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             )
             btn_render.click(
                 fn=render_gen_cb,
-                inputs=[gen_dropdown, render_mode],
+                inputs=[gen_dropdown, render_mode, bgm_mode, bgm_dropdown],
                 outputs=[render_status, render_video_out, render_report],
                 concurrency_limit=1,
             )
             btn_pipeline.click(
                 fn=pipeline_gen_cb,
-                inputs=[gen_dropdown, render_mode],
+                inputs=[gen_dropdown, render_mode, bgm_mode, bgm_dropdown],
                 outputs=[pipeline_status, pipeline_audio, pipeline_video, pipeline_info],
                 concurrency_limit=1,
             )
