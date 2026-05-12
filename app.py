@@ -562,11 +562,11 @@ def wf_gen_cb(state):
     yield state, status, gr.update(choices=choices, interactive=True, value=None), ""
 
 
-def wf_select_script(evt: gr.SelectData, state):
+def wf_select_script(value, state):
     """Step 2: 选中候选脚本。"""
-    if evt.value is None:
+    if not value:
         return state, "", gr.update()
-    sid = parse_script_id(evt.value)
+    sid = parse_script_id(value)
     if not sid:
         return state, "选择无效", gr.update()
     state["selected_script_id"] = sid
@@ -575,7 +575,7 @@ def wf_select_script(evt: gr.SelectData, state):
     draft_path = CHEAT_ROOT / "scripts" / sid / "draft.md"
     preview = ""
     if draft_path.exists():
-        preview = load_file_text(str(draft_path), 2000)
+        preview = load_file_text(draft_path, 2000)
     return state, preview, gr.update(interactive=True)
 
 
@@ -1067,7 +1067,7 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             )
             wf_script_radio.change(
                 fn=wf_select_script,
-                inputs=[wf_state],
+                inputs=[wf_script_radio, wf_state],
                 outputs=[wf_state, wf_script_preview, btn_wf_quality],
             )
 
