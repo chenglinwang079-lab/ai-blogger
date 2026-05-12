@@ -416,6 +416,38 @@ def render_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
     yield f"✅ 视频完成\npath: {result}{report_info}", existing_path(result), report_info
 
 
+def stock_fill_cb(script_id_choice: str):
+    """补充外部素材（generator yield 进度）。"""
+    sid = parse_script_id(script_id_choice)
+    if not sid:
+        yield "❌ 请选择脚本"
+        return
+
+    from pipeline.stock import fill_footage_for_script
+    yield "⏳ 正在补充外部素材..."
+    result, err = safe_call(fill_footage_for_script, sid, config)
+    if err:
+        yield f"❌ 失败:\n```\n{err}\n```"
+        return
+
+    mk = result["missing_keywords"]
+    dl = result["downloaded"]
+    sc = result["skipped_cached"]
+    fl = result["failed"]
+    lines = [f"**缺失关键词**: {len(mk)}"]
+    if not mk:
+        lines.append("无需补充素材")
+    else:
+        lines.append(f"**下载成功**: {len(dl)}")
+        if sc:
+            lines.append(f"**跳过缓存**: {len(sc)}")
+        if fl:
+            lines.append(f"**失败**: {len(fl)}")
+            for f in fl:
+                lines.append(f"  - {f['keyword']} ({f['provider']}): {f['error']}")
+    yield "\n".join(lines)
+
+
 def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient"):
     """TTS + 渲染一键执行（generator 顺序 yield）。"""
     sid = parse_script_id(script_id_choice)
@@ -840,6 +872,10 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 tts_backend = gr.Textbox(label="Backend", interactive=False)
                 tts_duration = gr.Textbox(label="Duration", interactive=False)
 
+            gr.Markdown("### 补充外部素材")
+            btn_stock = gr.Button("补充外部素材", variant="secondary")
+            stock_status = gr.Markdown()
+
             gr.Markdown("### 视频渲染")
             render_mode = gr.Radio(
                 choices=["gradient", "footage"],
@@ -867,6 +903,12 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 fn=tts_gen_cb,
                 inputs=[gen_dropdown],
                 outputs=[tts_status, tts_audio, tts_backend, tts_duration],
+                concurrency_limit=1,
+            )
+            btn_stock.click(
+                fn=stock_fill_cb,
+                inputs=[gen_dropdown],
+                outputs=[stock_status],
                 concurrency_limit=1,
             )
             btn_render.click(
