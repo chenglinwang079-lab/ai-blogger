@@ -399,6 +399,24 @@ def cmd_footage(args: argparse.Namespace, config: dict) -> None:
         missed = collect_missed_keywords(reports)
         print(format_missed_keywords_markdown(missed, top_n=args.top))
 
+    elif args.footage_action == "health":
+        from pipeline.stock import health_check_external
+        footage_dir = PROJECT_ROOT / config["paths"].get("footage_dir", "assets/footage")
+        if not footage_dir.is_absolute():
+            footage_dir = PROJECT_ROOT / footage_dir
+        result = health_check_external(footage_dir)
+        print(f"\n素材健康检查:")
+        print(f"  sources.json 记录: {result['total_sources']}")
+        print(f"  有效: {result['valid']}")
+        print(f"  文件缺失: {result['missing_files']}")
+        print(f"  零字节: {result['zero_byte']}")
+        print(f"  孤儿文件: {result['orphan_files']}")
+        if result["issues"]:
+            print(f"\n问题详情:")
+            for issue in result["issues"][:20]:
+                print(f"  [{issue['type']}] {issue['path']}")
+        print()
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -471,6 +489,8 @@ def main():
     p_missed = footage_sub.add_parser("missed", help="未命中关键词 Top N")
     p_missed.add_argument("--top", type=int, default=20, help="显示前 N 个")
     p_missed.set_defaults(func=cmd_footage)
+    p_health = footage_sub.add_parser("health", help="外部素材健康检查")
+    p_health.set_defaults(func=cmd_footage)
 
     args = parser.parse_args()
     config = load_config(args.config)

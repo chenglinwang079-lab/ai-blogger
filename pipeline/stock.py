@@ -490,3 +490,59 @@ def fill_footage_for_script(
                     })
 
     return result
+
+
+# ── 健康检查 ────────────────────────────────────────────────────────
+
+def health_check_external(footage_dir: Path) -> dict:
+    """检查 external/ 素材健康状态。
+    返回 {total_sources, valid, missing_files, zero_byte, orphan_files, issues}
+    """
+    sources = _load_sources(footage_dir)
+    ext_dir = footage_dir / "external"
+    issues: list[dict] = []
+
+    # sources.json 中记录的文件
+    source_paths: set[str] = set()
+    valid = 0
+    missing_files = 0
+    zero_byte = 0
+
+    for s in sources:
+        p = s.get("path", "")
+        if not p:
+            continue
+        source_paths.add(p)
+        fp = Path(p)
+        if not fp.exists():
+            missing_files += 1
+            issues.append({"type": "missing_file", "path": p, "source": s})
+        elif fp.stat().st_size == 0:
+            zero_byte += 1
+            issues.append({"type": "zero_byte", "path": p})
+        else:
+            valid += 1
+
+    # orphan: external/ 目录下有文件但 sources.json 无记录
+    orphan_files = 0
+    if ext_dir.exists():
+        for f in ext_dir.rglob("*"):
+            if f.suffix.lower() in {".mp4", ".mov", ".webm", ".avi"}:
+                resolved = str(f.resolve())
+                found = False
+                for sp in source_paths:
+                    if Path(sp).resolve() == Path(resolved):
+                        found = True
+                        break
+                if not found:
+                    orphan_files += 1
+                    issues.append({"type": "orphan_file", "path": str(f)})
+
+    return {
+        "total_sources": len(sources),
+        "valid": valid,
+        "missing_files": missing_files,
+        "zero_byte": zero_byte,
+        "orphan_files": orphan_files,
+        "issues": issues,
+    }
