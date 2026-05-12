@@ -436,9 +436,57 @@ edge-tts 输出 mp3，tts.py 负责转码为 WAV 并统一 sample_rate（48kHz�
 7. `python main.py export --script-id xxx` → 输出完整发布包
 8. `python main.py retro --script-id xxx --views 1000 --likes 50` → 写入复盘报告
 
+## Phase H：外部素材补全器
+
+自动检测缺失素材 → 调用 Pexels/Pixabay API 搜索下载 → 写入本地素材池 → 渲染自动生效。
+
+### 使用方法
+
+```powershell
+# 1. 设置 API key（环境变量，不写入文件）
+$env:PEXELS_API_KEY = "your_pexels_key"
+$env:PIXABAY_API_KEY = "your_pixabay_key"   # 可选
+
+# 2. 补充素材（指定 script-id）
+D:\voxcpm\venv\Scripts\python.exe main.py stock fill --script-id <script_id>
+
+# 3. 可选参数
+--provider pexels    # 只用 Pexels
+--provider pixabay   # 只用 Pixabay
+--limit 1            # 每个关键词最多下载 1 个
+```
+
+### 渲染验证
+
+```powershell
+# footage 模式渲染，检查 matched 是否增加
+D:\voxcpm\venv\Scripts\python.exe main.py step render --script-id <id> --force
+# 查看报告
+cat dist/<id>/render_report.json
+```
+
+### 安全说明
+
+- **API key 只走环境变量**，不写入 config.toml 或代码
+- `assets/footage/external/`、`.cache/`、`sources.json` 已加入 `.gitignore`
+- 素材文件不进 git，本地使用
+
+### 配置（config.toml）
+
+```toml
+[stock]
+auto_fill_enabled = false    # 未来自动补素材开关
+provider_order = ["pexels", "pixabay"]
+max_downloads_per_keyword = 2
+cache_hours = 24
+orientation = "portrait"
+min_width = 720
+min_height = 1280
+```
+
 ## 后续扩展（不在 MVP）
 
-- 素材混剪（Pexels/Pixabay）
+- ~~素材混剪（Pexels/Pixabay）~~ ✅ Phase H 已完成
 - 数字人口播（Wav2Lip/MuseTalk）
 - Gradio WebUI
 - Playwright 自动发布
