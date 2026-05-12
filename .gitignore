@@ -28,6 +28,8 @@ assets/footage/**/*.webm
 assets/footage/**/*.avi
 !assets/footage/README.md
 !assets/footage/**/.gitkeep
+assets/footage/.cache/
+assets/footage/sources.json
 
 # Large binary outputs
 dist/

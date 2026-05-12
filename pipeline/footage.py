@@ -6,8 +6,8 @@ import re
 
 _VIDEO_EXTS = {".mp4", ".mov", ".webm", ".avi"}
 
-# 中文关键词 → 英文 tag 映射
-_KEYWORD_ALIASES = {
+# 中文关键词 → 英文 tag 映射（stock.py 也用）
+KEYWORD_ALIASES = {
     "芯片": {"chip", "hardware"},
     "代码": {"code", "programming"},
     "机器人": {"robot"},
@@ -78,7 +78,7 @@ def match_footage(keyword: str, index: list[dict]) -> str | None:
     # 中文别名展开
     expanded = set(tokens)
     for tok in tokens:
-        for cn, en_set in _KEYWORD_ALIASES.items():
+        for cn, en_set in KEYWORD_ALIASES.items():
             if cn in tok:
                 expanded.update(en_set)
             for en in en_set:
@@ -108,3 +108,13 @@ def match_footage(keyword: str, index: list[dict]) -> str | None:
         return random.choice(abstracts)["path"]
 
     return None
+
+
+def match_footage_with_reason(keyword: str, index: list[dict]) -> dict:
+    """返回 {"path": str|None, "reason": "matched"|"abstract_fallback"|"none"}。"""
+    path = match_footage(keyword, index)
+    if path is None:
+        return {"path": None, "reason": "none"}
+    parts = {p.lower() for p in Path(path).parts}
+    reason = "abstract_fallback" if "abstract" in parts else "matched"
+    return {"path": path, "reason": reason}

@@ -1,6 +1,8 @@
 [api]
 openai_api_key = ""  # 推荐使用 MIMO_API_KEY 或 OPENAI_API_KEY 环境变量
 openai_base_url = "https://api.xiaomimimo.com/v1"
+pexels_api_key_env = "PEXELS_API_KEY"
+pixabay_api_key_env = "PIXABAY_API_KEY"
 
 [models]
 script_model = "mimo-v2.5-pro"
@@ -37,3 +39,13 @@ bgm_volume = 0.15
 subtitle_font = "Microsoft YaHei"
 subtitle_fontsize = 42
 render_mode = "gradient"   # "gradient" | "footage"
+
+[stock]
+# 未来自动补素材开关；手动 CLI/WebUI 始终可执行
+auto_fill_enabled = false
+provider_order = ["pexels", "pixabay"]
+max_downloads_per_keyword = 2
+cache_hours = 24
+orientation = "portrait"
+min_width = 720
+min_height = 1280

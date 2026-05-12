@@ -86,6 +86,8 @@ def ensure_directories(config: dict) -> None:
         output_dir,
         PROJECT_ROOT / "assets" / "fonts",
         PROJECT_ROOT / "assets" / "bgm",
+        PROJECT_ROOT / "assets" / "footage" / "external",
+        PROJECT_ROOT / "assets" / "footage" / ".cache",
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
@@ -310,6 +312,33 @@ def cmd_status(args: argparse.Namespace, config: dict) -> None:
         print(f"  current: {current}")
 
 
+def cmd_stock(args: argparse.Namespace, config: dict) -> None:
+    """stock 命令：外部素材管理。"""
+    if args.stock_action == "fill":
+        from pipeline.stock import fill_footage_for_script
+        result = fill_footage_for_script(
+            args.script_id, config,
+            provider=getattr(args, "provider", None),
+            limit=getattr(args, "limit", None),
+        )
+        mk = result["missing_keywords"]
+        dl = result["downloaded"]
+        sc = result["skipped_cached"]
+        fl = result["failed"]
+        print(f"\n缺失关键词: {len(mk)}")
+        if not mk:
+            print("无需补充素材")
+        else:
+            print(f"下载成功: {len(dl)}")
+            if sc:
+                print(f"跳过缓存: {len(sc)}")
+            if fl:
+                print(f"失败: {len(fl)}")
+                for f in fl:
+                    print(f"  - {f['keyword']} ({f['provider']}): {f['error']}")
+        print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ai-blogger",
@@ -354,9 +383,18 @@ def main():
     p_status = subparsers.add_parser("status", help="显示进度")
     p_status.set_defaults(func=cmd_status)
 
+    # stock
+    p_stock = subparsers.add_parser("stock", help="外部素材管理")
+    stock_sub = p_stock.add_subparsers(dest="stock_action", required=True)
+    p_fill = stock_sub.add_parser("fill", help="补充外部素材")
+    p_fill.add_argument("--script-id", type=str, required=True, help="脚本 ID")
+    p_fill.add_argument("--provider", type=str, choices=["pexels", "pixabay"], help="指定 provider")
+    p_fill.add_argument("--limit", type=int, help="每个关键词下载数量上限")
+    p_fill.set_defaults(func=cmd_stock)
+
     args = parser.parse_args()
     config = load_config(args.config)
-    validate_config(config, require_api=(args.command != "status"))
+    validate_config(config, require_api=(args.command not in ("status", "stock")))
     ensure_directories(config)
 
     args.func(args, config)
