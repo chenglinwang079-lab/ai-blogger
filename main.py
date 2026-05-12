@@ -248,36 +248,202 @@ def cmd_step(args: argparse.Namespace, config: dict) -> None:
 
 
 def cmd_export(args: argparse.Namespace, config: dict) -> None:
-    """export 命令：导出发布包。"""
+    """export 命令：导出发布包（支持 --platform / --all-platforms）。"""
     if not args.script_id:
         logger.error("export 需要 --script-id")
         sys.exit(1)
     from pipeline import validate_script_id
     validate_script_id(args.script_id)
-    logger.info(f"导出发布包: {args.script_id}")
-    from pipeline.export_pkg import export_package
-    result = export_package(args.script_id, config)
-    logger.info(f"已导出到: {result}")
+
+    platform = getattr(args, "platform", None)
+    all_platforms = getattr(args, "all_platforms", False)
+
+    if platform and all_platforms:
+        logger.error("--platform 和 --all-platforms 互斥")
+        sys.exit(1)
+
+    from pipeline.export_pkg import export_package, _export_platform, update_manifest_platform_exports
+
+    if all_platforms:
+        # 根导出一次
+        logger.info(f"导出发布包（全平台）: {args.script_id}")
+        result = export_package(args.script_id, config)
+        # 逐平台适配
+        from pipeline.platform_profiles import PLATFORMS
+        for p in PLATFORMS:
+            logger.info(f"适配平台: {p}")
+            metadata = _export_platform(args.script_id, p, config)
+            update_manifest_platform_exports(args.script_id, p, metadata, config)
+        logger.info(f"全平台导出完成: {result}")
+    elif platform:
+        logger.info(f"导出发布包: {args.script_id} (平台: {platform})")
+        result = export_package(args.script_id, config, platform=platform)
+        logger.info(f"已导出到: {result}")
+    else:
+        logger.info(f"导出发布包: {args.script_id}")
+        result = export_package(args.script_id, config)
+        logger.info(f"已导出到: {result}")
+
+
+def cmd_performance(args: argparse.Namespace, config: dict) -> None:
+    """performance 命令：表现数据管理。"""
+    from pipeline.performance import record_performance, get_latest, list_all_performance
+
+    action = getattr(args, "perf_action", None)
+
+    if action == "record":
+        if not args.script_id:
+            logger.error("record 需要 --script-id")
+            sys.exit(1)
+        data = record_performance(
+            args.script_id, config,
+            platform=args.platform,
+            views=args.views, likes=args.likes,
+            comments=args.comments, shares=args.shares, favorites=args.favorites,
+        )
+        n = len(data["records"])
+        print(f"已录入: {args.script_id} platform={args.platform} views={args.views} (共 {n} 条记录)")
+
+    elif action == "latest":
+        if not args.script_id:
+            logger.error("latest 需要 --script-id")
+            sys.exit(1)
+        platform = getattr(args, "platform", None)
+        latest = get_latest(args.script_id, config, platform=platform)
+        if not latest:
+            print("无表现数据")
+            return
+        import json
+        print(json.dumps(latest, ensure_ascii=False, indent=2))
+
+    elif action == "list":
+        items = list_all_performance(config)
+        if not items:
+            print("暂无表现数据")
+            return
+        print(f"\n{'='*70}")
+        print(f"表现数据 ({len(items)} 条)")
+        print(f"{'='*70}")
+        for item in items:
+            sid = item["script_id"]
+            title = item["title"][:30]
+            latest = item["latest"]
+            plat_parts = []
+            for plat, rec in latest.items():
+                plat_parts.append(f"{plat}: views={rec.get('views',0)} likes={rec.get('likes',0)}")
+            plat_str = " | ".join(plat_parts) if latest else "-"
+            print(f"\n  {sid}  {title}")
+            print(f"    {plat_str}")
+        print()
+
+
+def _resolve_perf_platform(script_id: str, config: dict, platform: str | None) -> tuple[str, dict | None]:
+    """--from-performance 平台选择逻辑。返回 (实际平台, record)。"""
+    from pipeline.performance import get_latest
+    latest = get_latest(script_id, config, platform=platform)
+    if not latest:
+        return ("", None)
+    if platform:
+        rec = latest.get(platform)
+        return (platform, rec)
+    # 优先 douyin
+    if "douyin" in latest:
+        return ("douyin", latest["douyin"])
+    # 取任意平台
+    plat = next(iter(latest))
+    return (plat, latest[plat])
 
 
 def cmd_retro(args: argparse.Namespace, config: dict) -> None:
-    """retro 命令：复盘。"""
-    if not args.script_id and not args.title:
-        logger.error("retro 需要 --script-id 或 --title")
-        sys.exit(1)
-    if args.script_id:
-        from pipeline import validate_script_id
-        validate_script_id(args.script_id)
-    actual = {
-        "views": args.views,
-        "likes": args.likes,
-        "comments": args.comments,
-    }
-    logger.info(f"复盘: {args.script_id or args.title}")
+    """retro 命令：复盘（支持 --batch / --from-performance）。"""
     from adapter.cheat import retro
-    # TODO: --title 模糊搜索支持
-    result = retro(args.script_id, actual, config)
-    logger.info(f"复盘报告: {result['report_path']}")
+
+    batch = getattr(args, "batch", False)
+    from_perf = getattr(args, "from_performance", False)
+    platform_arg = getattr(args, "platform", None)
+    force = getattr(args, "force", False)
+
+    if batch:
+        # 批量复盘
+        from pipeline.publish import list_publish_queue
+        from pipeline.performance import load_performance
+        published = list_publish_queue(config, status="published")
+        if not published:
+            print("无已发布脚本")
+            return
+        cheat_root = PROJECT_ROOT / config["paths"]["cheat_root"]
+        results = []
+        for item in published:
+            sid = item["script_id"]
+            # 检查有 performance
+            perf = load_performance(sid, config)
+            if not perf or not perf.get("records"):
+                results.append((sid, "跳过", "无表现数据"))
+                continue
+            # 检查已有 report
+            report_path = cheat_root / "videos" / sid / "report.md"
+            if report_path.exists() and not force:
+                results.append((sid, "跳过", "已有复盘报告"))
+                continue
+            # 选择平台
+            plat, rec = _resolve_perf_platform(sid, config, platform_arg)
+            if not rec:
+                results.append((sid, "跳过", f"无 {plat or 'douyin'} 平台数据"))
+                continue
+            actual = {
+                "views": rec.get("views", 0),
+                "likes": rec.get("likes", 0),
+                "comments": rec.get("comments", 0),
+                "shares": rec.get("shares", 0),
+            }
+            try:
+                result = retro(sid, actual, config)
+                results.append((sid, "成功", result["report_path"]))
+            except Exception as e:
+                results.append((sid, "失败", str(e)))
+
+        print(f"\n批量复盘结果 ({len(results)} 条):")
+        for sid, status, info in results:
+            print(f"  {sid}  [{status}]  {info}")
+        print()
+
+    elif from_perf:
+        # 从 performance 读取 actual
+        if not args.script_id:
+            logger.error("--from-performance 需要 --script-id")
+            sys.exit(1)
+        plat, rec = _resolve_perf_platform(args.script_id, config, platform_arg)
+        if not rec:
+            logger.error(f"无表现数据: {args.script_id}")
+            sys.exit(1)
+        logger.info(f"从 performance 读取: platform={plat}")
+        actual = {
+            "views": rec.get("views", 0),
+            "likes": rec.get("likes", 0),
+            "comments": rec.get("comments", 0),
+            "shares": rec.get("shares", 0),
+        }
+        result = retro(args.script_id, actual, config)
+        logger.info(f"复盘报告: {result['report_path']} (platform={plat})")
+
+    else:
+        # 原有逻辑：手动传入 actual
+        if not args.script_id and not args.title:
+            logger.error("retro 需要 --script-id 或 --title")
+            sys.exit(1)
+        if args.script_id:
+            from pipeline import validate_script_id
+            validate_script_id(args.script_id)
+        actual = {
+            "views": args.views,
+            "likes": args.likes,
+            "comments": args.comments,
+            "shares": getattr(args, "shares", 0),
+        }
+        logger.info(f"复盘: {args.script_id or args.title}")
+        # TODO: --title 模糊搜索支持
+        result = retro(args.script_id, actual, config)
+        logger.info(f"复盘报告: {result['report_path']}")
 
 
 def cmd_status(args: argparse.Namespace, config: dict) -> None:
@@ -418,6 +584,83 @@ def cmd_footage(args: argparse.Namespace, config: dict) -> None:
         print()
 
 
+def cmd_queue(args: argparse.Namespace, config: dict) -> None:
+    """queue 命令：发布队列管理。"""
+    from pipeline.publish import (
+        load_publish, save_publish, init_or_update_status,
+        update_publish_status, list_publish_queue,
+    )
+
+    action = getattr(args, "queue_action", None)
+
+    if action == "show":
+        if not args.script_id:
+            logger.error("show 需要 --script-id")
+            sys.exit(1)
+        data = load_publish(args.script_id, config)
+        if not data:
+            logger.error(f"未找到 publish.json: {args.script_id}")
+            sys.exit(1)
+        # 补齐 title
+        manifest_path = PROJECT_ROOT / config["paths"]["cheat_root"] / "scripts" / args.script_id / "manifest.json"
+        if manifest_path.exists():
+            import json
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            data["title"] = manifest.get("title", "")
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+
+    elif action == "update":
+        if not args.script_id:
+            logger.error("update 需要 --script-id")
+            sys.exit(1)
+        status = args.status
+        if not status:
+            logger.error("update 需要 --status")
+            sys.exit(1)
+        platform = getattr(args, "platform", None) or "douyin"
+        kwargs = {}
+        if getattr(args, "post_url", None):
+            kwargs["post_url"] = args.post_url
+        if getattr(args, "published_at", None):
+            kwargs["published_at"] = args.published_at
+        if getattr(args, "scheduled_at", None):
+            kwargs["scheduled_at"] = args.scheduled_at
+        if getattr(args, "error", None):
+            kwargs["error"] = args.error
+        data = update_publish_status(
+            args.script_id, config, status=status, platform=platform, **kwargs,
+        )
+        print(f"已更新: {args.script_id} → {status}")
+
+    elif action == "init":
+        if not args.script_id:
+            logger.error("init 需要 --script-id")
+            sys.exit(1)
+        data = init_or_update_status(args.script_id, config, status="ready")
+        print(f"已初始化: {args.script_id} (status={data['status']})")
+
+    else:
+        # list（默认）
+        status_filter = getattr(args, "status", None)
+        queue = list_publish_queue(config, status=status_filter)
+        if not queue:
+            print("发布队列为空")
+            return
+        print(f"\n{'='*70}")
+        print(f"发布队列 ({len(queue)} 条)")
+        print(f"{'='*70}")
+        for item in queue:
+            sid = item.get("script_id", "?")
+            title = item.get("title", "?")
+            st = item.get("status", "?")
+            updated = item.get("updated_at", "?")
+            platforms = item.get("platforms", {})
+            plat_str = ", ".join(f"{k}:{v.get('status','?')}" for k, v in platforms.items()) if platforms else "-"
+            print(f"\n  {sid}  [{st}]  {title}")
+            print(f"    平台: {plat_str}  更新: {updated}")
+        print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ai-blogger",
@@ -447,6 +690,8 @@ def main():
     # export
     p_export = subparsers.add_parser("export", help="导出发布包")
     p_export.add_argument("--script-id", type=str, required=True, help="脚本 ID")
+    p_export.add_argument("--platform", type=str, choices=["douyin", "kuaishou", "bilibili"], help="目标平台")
+    p_export.add_argument("--all-platforms", action="store_true", help="导出所有平台")
     p_export.set_defaults(func=cmd_export)
 
     # retro
@@ -456,6 +701,11 @@ def main():
     p_retro.add_argument("--views", type=int, default=0, help="实际播放量")
     p_retro.add_argument("--likes", type=int, default=0, help="实际点赞数")
     p_retro.add_argument("--comments", type=int, default=0, help="实际评论数")
+    p_retro.add_argument("--shares", type=int, default=0, help="实际分享数")
+    p_retro.add_argument("--from-performance", action="store_true", dest="from_performance", help="从 performance.json 读取实际数据")
+    p_retro.add_argument("--platform", type=str, default=None, help="指定平台（配合 --from-performance 或 --batch）")
+    p_retro.add_argument("--batch", action="store_true", help="批量复盘所有已发布脚本")
+    p_retro.add_argument("--force", action="store_true", help="强制重新生成已有报告")
     p_retro.set_defaults(func=cmd_retro)
 
     # status
@@ -492,9 +742,49 @@ def main():
     p_health = footage_sub.add_parser("health", help="外部素材健康检查")
     p_health.set_defaults(func=cmd_footage)
 
+    # queue
+    p_queue = subparsers.add_parser("queue", help="发布队列管理")
+    p_queue.add_argument("--status", type=str, choices=["draft", "ready", "scheduled", "published", "failed"], help="状态筛选（list 用）")
+    queue_sub = p_queue.add_subparsers(dest="queue_action")
+    p_queue_show = queue_sub.add_parser("show", help="单条详情")
+    p_queue_show.add_argument("--script-id", type=str, required=True, help="脚本 ID")
+    p_queue_show.set_defaults(func=cmd_queue)
+    p_queue_update = queue_sub.add_parser("update", help="更新发布状态")
+    p_queue_update.add_argument("--script-id", type=str, required=True, help="脚本 ID")
+    p_queue_update.add_argument("--status", type=str, required=True, choices=["draft", "ready", "scheduled", "published", "failed"], help="目标状态")
+    p_queue_update.add_argument("--platform", type=str, default="douyin", help="平台（默认 douyin）")
+    p_queue_update.add_argument("--post-url", type=str, default=None, help="发布链接")
+    p_queue_update.add_argument("--published-at", type=str, default=None, help="发布时间（ISO-8601）")
+    p_queue_update.add_argument("--scheduled-at", type=str, default=None, help="排程时间（ISO-8601）")
+    p_queue_update.add_argument("--error", type=str, default=None, help="错误信息")
+    p_queue_update.set_defaults(func=cmd_queue)
+    p_queue_init = queue_sub.add_parser("init", help="手动初始化 publish.json")
+    p_queue_init.add_argument("--script-id", type=str, required=True, help="脚本 ID")
+    p_queue_init.set_defaults(func=cmd_queue)
+    p_queue.set_defaults(func=cmd_queue)
+
+    # performance
+    p_perf = subparsers.add_parser("performance", help="表现数据管理")
+    perf_sub = p_perf.add_subparsers(dest="perf_action", required=True)
+    p_perf_record = perf_sub.add_parser("record", help="录入表现数据")
+    p_perf_record.add_argument("--script-id", type=str, required=True, help="脚本 ID")
+    p_perf_record.add_argument("--platform", type=str, default="douyin", help="平台（默认 douyin）")
+    p_perf_record.add_argument("--views", type=int, default=0, help="播放量")
+    p_perf_record.add_argument("--likes", type=int, default=0, help="点赞数")
+    p_perf_record.add_argument("--comments", type=int, default=0, help="评论数")
+    p_perf_record.add_argument("--shares", type=int, default=0, help="分享数")
+    p_perf_record.add_argument("--favorites", type=int, default=0, help="收藏数")
+    p_perf_record.set_defaults(func=cmd_performance)
+    p_perf_latest = perf_sub.add_parser("latest", help="查看最新表现数据")
+    p_perf_latest.add_argument("--script-id", type=str, required=True, help="脚本 ID")
+    p_perf_latest.add_argument("--platform", type=str, default=None, help="指定平台")
+    p_perf_latest.set_defaults(func=cmd_performance)
+    p_perf_list = perf_sub.add_parser("list", help="列出所有表现数据")
+    p_perf_list.set_defaults(func=cmd_performance)
+
     args = parser.parse_args()
     config = load_config(args.config)
-    validate_config(config, require_api=(args.command not in ("status", "stock", "footage")))
+    validate_config(config, require_api=(args.command not in ("status", "stock", "footage", "queue", "performance", "retro")))
     ensure_directories(config)
 
     args.func(args, config)
