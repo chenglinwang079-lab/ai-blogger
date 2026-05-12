@@ -756,6 +756,54 @@ def show_detail(choice: str):
     return script_detail_md(choice)
 
 
+def footage_stats_md():
+    """素材命中率统计 Markdown。"""
+    from pipeline.footage_stats import load_all_reports, aggregate_stats, per_script_stats, format_stats_markdown
+    dist_dir = PROJECT_ROOT / config["paths"].get("output_dir", "dist")
+    reports = load_all_reports(dist_dir)
+    if not reports:
+        return "暂无 render_report.json 数据"
+    agg = aggregate_stats(reports)
+    ps = per_script_stats(reports)
+    return format_stats_markdown(agg, ps)
+
+
+def footage_missed_md():
+    """未命中关键词 Markdown。"""
+    from pipeline.footage_stats import load_all_reports, collect_missed_keywords, format_missed_keywords_markdown
+    dist_dir = PROJECT_ROOT / config["paths"].get("output_dir", "dist")
+    reports = load_all_reports(dist_dir)
+    if not reports:
+        return "暂无 render_report.json 数据"
+    missed = collect_missed_keywords(reports)
+    return format_missed_keywords_markdown(missed, top_n=20)
+
+
+def footage_health_md():
+    """素材健康检查 Markdown。"""
+    from pipeline.stock import health_check_external
+    footage_dir = PROJECT_ROOT / config["paths"].get("footage_dir", "assets/footage")
+    if not footage_dir.is_absolute():
+        footage_dir = PROJECT_ROOT / footage_dir
+    result = health_check_external(footage_dir)
+    lines = [
+        "## 素材健康检查",
+        "",
+        f"| 指标 | 值 |",
+        f"|------|-----|",
+        f"| sources.json 记录 | {result['total_sources']} |",
+        f"| 有效 | {result['valid']} |",
+        f"| 文件缺失 | {result['missing_files']} |",
+        f"| 零字节 | {result['zero_byte']} |",
+        f"| 孤儿文件 | {result['orphan_files']} |",
+    ]
+    if result["issues"]:
+        lines += ["", "### 问题详情", ""]
+        for issue in result["issues"][:20]:
+            lines.append(f"- [{issue['type']}] `{issue['path']}`")
+    return "\n".join(lines)
+
+
 
 
 # ── UI 构建 ──────────────────────────────────────────────────────────────
@@ -804,6 +852,14 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 btn_detail = gr.Button("查看详情")
             detail_md = gr.Markdown(value="选择脚本查看详情", label="脚本详情")
 
+            gr.Markdown("---")
+            gr.Markdown("### 素材管理")
+            with gr.Row():
+                btn_footage_stats = gr.Button("刷新素材统计")
+                btn_footage_missed = gr.Button("未命中关键词")
+                btn_footage_health = gr.Button("健康检查")
+            footage_mgmt_md = gr.Markdown(value="点击按钮查看素材状态", label="素材管理")
+
             btn_refresh_status.click(
                 fn=refresh_status,
                 outputs=[env_md, scripts_md],
@@ -813,6 +869,9 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 inputs=[status_dropdown],
                 outputs=[detail_md],
             )
+            btn_footage_stats.click(fn=footage_stats_md, outputs=[footage_mgmt_md])
+            btn_footage_missed.click(fn=footage_missed_md, outputs=[footage_mgmt_md])
+            btn_footage_health.click(fn=footage_health_md, outputs=[footage_mgmt_md])
 
         # ════════════════════════════════════════════════════════════════
         # Tab 1: 选题
