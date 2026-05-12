@@ -159,6 +159,40 @@ def select_bgm(script_id: str, config: dict) -> tuple[Path | None, dict]:
     return best[1], {**profile, "bgm_id": best[0]["id"], "reason": "first_available"}
 
 
+def list_available_bgm(config: dict) -> list[dict]:
+    """返回 catalog 中文件实际存在的条目列表。
+
+    复用 load_bgm_catalog，逐条检查文件存在性。
+    catalog 不存在或为空 → 返回空列表。
+    """
+    bgm_dir = _resolve_bgm_dir(config)
+    catalog = load_bgm_catalog(config)
+    available = []
+    for entry in catalog:
+        path = _resolve_entry_path(entry, bgm_dir)
+        if path.exists():
+            available.append(entry)
+    return available
+
+
+def resolve_bgm_by_id(bgm_id: str, config: dict) -> tuple[Path | None, dict]:
+    """按 id 查找 BGM。返回 (路径, entry 信息)。
+
+    - 找到且文件存在 → (path, entry)
+    - 找到但文件不存在 → (None, {"id": bgm_id, "reason": "file_missing"})
+    - 未找到 → (None, {"id": bgm_id, "reason": "not_found"})
+    """
+    bgm_dir = _resolve_bgm_dir(config)
+    catalog = load_bgm_catalog(config)
+    for entry in catalog:
+        if entry.get("id") == bgm_id:
+            path = _resolve_entry_path(entry, bgm_dir)
+            if path.exists():
+                return path, entry
+            return None, {"id": bgm_id, "reason": "file_missing"}
+    return None, {"id": bgm_id, "reason": "not_found"}
+
+
 # ---------------------------------------------------------------------------
 # 内部工具
 # ---------------------------------------------------------------------------
