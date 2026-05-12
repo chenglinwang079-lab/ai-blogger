@@ -339,6 +339,41 @@ def cmd_stock(args: argparse.Namespace, config: dict) -> None:
         print()
 
 
+def cmd_footage(args: argparse.Namespace, config: dict) -> None:
+    """footage 命令：素材池管理。"""
+    from pipeline.footage import (
+        load_blocklist, add_to_blocklist, remove_from_blocklist, list_blocklist,
+    )
+    footage_dir = PROJECT_ROOT / config["paths"].get("footage_dir", "assets/footage")
+
+    if args.footage_action == "disable":
+        path = args.path
+        if not Path(path).exists():
+            logger.error(f"文件不存在: {path}")
+            sys.exit(1)
+        add_to_blocklist(footage_dir, path, reason=args.reason or "")
+        print(f"已禁用: {path}")
+
+    elif args.footage_action == "enable":
+        path = args.path
+        removed = remove_from_blocklist(footage_dir, path)
+        if removed:
+            print(f"已启用: {path}")
+        else:
+            print(f"未在黑名单中找到: {path}")
+
+    elif args.footage_action == "disabled":
+        items = list_blocklist(footage_dir)
+        if not items:
+            print("黑名单为空")
+        else:
+            print(f"\n黑名单 ({len(items)} 项):")
+            for item in items:
+                reason = f" — {item['reason']}" if item.get("reason") else ""
+                print(f"  {item['path']}{reason}")
+            print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ai-blogger",
@@ -391,6 +426,19 @@ def main():
     p_fill.add_argument("--provider", type=str, choices=["pexels", "pixabay"], help="指定 provider")
     p_fill.add_argument("--limit", type=int, help="每个关键词下载数量上限")
     p_fill.set_defaults(func=cmd_stock)
+
+    # footage
+    p_footage = subparsers.add_parser("footage", help="素材池管理")
+    footage_sub = p_footage.add_subparsers(dest="footage_action", required=True)
+    p_disable = footage_sub.add_parser("disable", help="禁用素材")
+    p_disable.add_argument("path", type=str, help="素材文件路径")
+    p_disable.add_argument("--reason", type=str, default="", help="禁用原因")
+    p_disable.set_defaults(func=cmd_footage)
+    p_enable = footage_sub.add_parser("enable", help="启用素材")
+    p_enable.add_argument("path", type=str, help="素材文件路径")
+    p_enable.set_defaults(func=cmd_footage)
+    p_disabled = footage_sub.add_parser("disabled", help="查看黑名单")
+    p_disabled.set_defaults(func=cmd_footage)
 
     args = parser.parse_args()
     config = load_config(args.config)

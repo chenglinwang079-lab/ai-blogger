@@ -1,21 +1,117 @@
 """本地素材池索引和匹配。"""
 
 from pathlib import Path
+import json
 import random
 import re
+import time
 
 from pipeline.keyword_aliases import ALIASES as KEYWORD_ALIASES
 
 _VIDEO_EXTS = {".mp4", ".mov", ".webm", ".avi"}
 
+# ── Blocklist ────────────────────────────────────────────────────────
 
-def index_footage(footage_dir: Path) -> list[dict]:
-    """扫描素材目录，返回 [{path, tags: set[str]}]。"""
+def _blocklist_path(footage_dir: Path) -> Path:
+    return footage_dir / "blocklist.json"
+
+
+def load_blocklist(footage_dir: Path) -> set[str]:
+    """返回被禁用素材的 resolved 路径集合。"""
+    bp = _blocklist_path(footage_dir)
+    if not bp.exists():
+        return set()
+    try:
+        data = json.loads(bp.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return set()
+    resolved = set()
+    base = footage_dir.parent.parent  # project root
+    for item in data.get("disabled", []):
+        p = item.get("path", "")
+        if p:
+            resolved.add(str((base / p).resolve()))
+    return resolved
+
+
+def add_to_blocklist(footage_dir: Path, path: str, reason: str = "") -> None:
+    """添加素材到黑名单。JSON 存相对路径（POSIX /）。"""
+    bp = _blocklist_path(footage_dir)
+    data = {"disabled": []}
+    if bp.exists():
+        try:
+            data = json.loads(bp.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    base = footage_dir.parent.parent
+    rel = Path(path).resolve().relative_to(base.resolve())
+    rel_posix = rel.as_posix()
+
+    # 去重
+    for item in data["disabled"]:
+        if item["path"] == rel_posix:
+            return
+
+    data["disabled"].append({
+        "path": rel_posix,
+        "reason": reason,
+        "disabled_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    })
+    bp.parent.mkdir(parents=True, exist_ok=True)
+    bp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def remove_from_blocklist(footage_dir: Path, path: str) -> bool:
+    """从黑名单移除素材，返回是否找到。"""
+    bp = _blocklist_path(footage_dir)
+    if not bp.exists():
+        return False
+    try:
+        data = json.loads(bp.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+
+    base = footage_dir.parent.parent
+    rel = Path(path).resolve().relative_to(base.resolve())
+    rel_posix = rel.as_posix()
+
+    before = len(data["disabled"])
+    data["disabled"] = [d for d in data["disabled"] if d["path"] != rel_posix]
+    if len(data["disabled"]) == before:
+        return False
+
+    bp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
+def list_blocklist(footage_dir: Path) -> list[dict]:
+    """返回黑名单条目列表。"""
+    bp = _blocklist_path(footage_dir)
+    if not bp.exists():
+        return []
+    try:
+        data = json.loads(bp.read_text(encoding="utf-8"))
+        return data.get("disabled", [])
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+# ── 索引与匹配 ──────────────────────────────────────────────────────
+
+def index_footage(footage_dir: Path, exclude: set[str] | None = None) -> list[dict]:
+    """扫描素材目录，返回 [{path, tags: set[str]}]。
+    exclude: resolved 路径集合，匹配到的素材会被过滤。
+    """
     entries = []
     if not footage_dir.exists():
         return entries
+    exclude = exclude or set()
     for f in footage_dir.rglob("*"):
         if f.suffix.lower() in _VIDEO_EXTS:
+            resolved = str(f.resolve())
+            if resolved in exclude:
+                continue
             tags = set()
             rel = f.relative_to(footage_dir)
             for part in rel.parent.parts:

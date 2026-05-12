@@ -203,13 +203,13 @@ def render_video(script_id: str, config: dict) -> str:
     footage_segments = []  # 每段素材使用记录
 
     if render_mode == "footage":
-        from pipeline.footage import index_footage, match_footage_with_reason
+        from pipeline.footage import index_footage, load_blocklist, match_footage_with_reason
         from moviepy import VideoFileClip
 
         footage_dir = Path(config["paths"].get("footage_dir", "assets/footage"))
         if not footage_dir.is_absolute():
             footage_dir = _PROJECT_ROOT / footage_dir
-        idx = index_footage(footage_dir)
+        idx = index_footage(footage_dir, exclude=load_blocklist(footage_dir))
         logger.info(f"素材索引: {len(idx)} 个文件")
 
         for i, ts in enumerate(timestamps):

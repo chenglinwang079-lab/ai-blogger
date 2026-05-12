@@ -30,6 +30,7 @@ assets/footage/**/*.avi
 !assets/footage/**/.gitkeep
 assets/footage/.cache/
 assets/footage/sources.json
+assets/footage/blocklist.json
 
 # Large binary outputs
 dist/
