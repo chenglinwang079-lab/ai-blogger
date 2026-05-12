@@ -661,6 +661,61 @@ def cmd_queue(args: argparse.Namespace, config: dict) -> None:
         print()
 
 
+def cmd_bgm(args: argparse.Namespace, config: dict) -> None:
+    """bgm 命令：BGM 管理。"""
+    from pipeline.bgm import load_bgm_catalog, infer_bgm_profile, select_bgm
+
+    action = getattr(args, "bgm_action", None)
+
+    if action == "suggest":
+        if not args.script_id:
+            logger.error("suggest 需要 --script-id")
+            sys.exit(1)
+
+        profile = infer_bgm_profile(args.script_id, config)
+        path, info = select_bgm(args.script_id, config)
+
+        # 读取 manifest 获取标题
+        manifest_path = PROJECT_ROOT / config["paths"]["cheat_root"] / "scripts" / args.script_id / "manifest.json"
+        title = ""
+        if manifest_path.exists():
+            import json as _json
+            try:
+                manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+                title = manifest.get("title", "")
+            except Exception:
+                pass
+
+        print("\n=== BGM 推荐 ===")
+        if title:
+            print(f"脚本: {title}")
+        print(f"推断情绪: {info['mood']} (命中: {', '.join(info.get('matched_keywords', [])) or '无'})")
+
+        reason = info.get("reason", "")
+        if reason == "catalog_missing":
+            print("\n未找到可用 BGM。")
+            print("请参考 assets/bgm/bgm_catalog.example.json 创建 assets/bgm/bgm_catalog.json 并添加素材。")
+        elif reason == "no_available_files":
+            print("\ncatalog 存在但无可用 BGM 文件。")
+            print("请检查 assets/bgm/ 下是否有对应音频文件。")
+        else:
+            print(f"推荐 BGM: {info.get('bgm_id', '?')}")
+            reason_labels = {
+                "mood_match": f"mood 精确匹配 ({info['mood']})",
+                "energy_match": f"energy 匹配 ({info['energy']})",
+                "first_available": "兜底（第一首可用）",
+            }
+            print(f"匹配原因: {reason_labels.get(reason, reason)}")
+            print(f"BGM 状态: {'已找到文件' if path else '文件缺失'}")
+            print("\n如需自定义 BGM，请编辑 assets/bgm/bgm_catalog.json")
+            print("参考模板: assets/bgm/bgm_catalog.example.json")
+        print()
+
+    else:
+        logger.error(f"未知 bgm 子命令: {action}")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ai-blogger",
@@ -782,9 +837,16 @@ def main():
     p_perf_list = perf_sub.add_parser("list", help="列出所有表现数据")
     p_perf_list.set_defaults(func=cmd_performance)
 
+    # bgm
+    p_bgm = subparsers.add_parser("bgm", help="BGM 管理")
+    bgm_sub = p_bgm.add_subparsers(dest="bgm_action", required=True)
+    p_bgm_suggest = bgm_sub.add_parser("suggest", help="推荐 BGM")
+    p_bgm_suggest.add_argument("--script-id", required=True, help="脚本 ID")
+    p_bgm_suggest.set_defaults(func=cmd_bgm)
+
     args = parser.parse_args()
     config = load_config(args.config)
-    validate_config(config, require_api=(args.command not in ("status", "stock", "footage", "queue", "performance", "retro")))
+    validate_config(config, require_api=(args.command not in ("status", "stock", "footage", "queue", "performance", "retro", "bgm")))
     ensure_directories(config)
 
     args.func(args, config)

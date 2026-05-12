@@ -341,6 +341,26 @@ def quality_check_cb(script_id_choice: str):
 # ── 回调：Tab 4 生成 ─────────────────────────────────────────────────────
 
 
+def bgm_info_cb(script_id_choice: str) -> str:
+    """BGM 推荐信息（Tab 4 展示）。"""
+    from pipeline.bgm import select_bgm
+    sid = parse_script_id(script_id_choice)
+    if not sid:
+        return ""
+    _, info = select_bgm(sid, config)
+    reason = info.get("reason", "")
+    if reason == "catalog_missing":
+        return "未配置 BGM（参考 assets/bgm/bgm_catalog.example.json）"
+    if reason == "no_available_files":
+        return "catalog 存在但无可用 BGM 文件"
+    mood = info.get("mood", "?")
+    energy = info.get("energy", "?")
+    bgm_id = info.get("bgm_id", "?")
+    keywords = ", ".join(info.get("matched_keywords", [])) or "无"
+    reason_labels = {"mood_match": "mood 匹配", "energy_match": "energy 匹配", "first_available": "兜底"}
+    return f"🎵 {bgm_id} | mood={mood} energy={energy} | 命中: {keywords} | {reason_labels.get(reason, reason)}"
+
+
 def tts_gen_cb(script_id_choice: str):
     """TTS 生成（generator yield 进度）。"""
     sid = parse_script_id(script_id_choice)
@@ -1169,6 +1189,7 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             stock_status = gr.Markdown()
 
             gr.Markdown("### 视频渲染")
+            bgm_info_text = gr.Textbox(label="BGM 推荐", interactive=False, max_lines=1)
             render_mode = gr.Radio(
                 choices=["gradient", "footage"],
                 value="gradient",
@@ -1190,6 +1211,13 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             pipeline_info = gr.Textbox(label="文件路径", interactive=False)
 
             btn_gen_refresh.click(fn=refresh_dropdown, outputs=[gen_dropdown])
+
+            # 选择脚本时更新 BGM 推荐
+            gen_dropdown.change(
+                fn=bgm_info_cb,
+                inputs=[gen_dropdown],
+                outputs=[bgm_info_text],
+            )
 
             btn_tts.click(
                 fn=tts_gen_cb,
