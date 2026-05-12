@@ -498,6 +498,186 @@ def export_cb(script_id_choice: str):
     yield f"✅ 已导出到: {result}", thumb, title, desc, tags, file_list
 
 
+# ── 回调：Tab 8 工作流 ─────────────────────────────────────────────────────
+
+
+def wf_fetch_cb(category, count):
+    """Step 1: 拉取选题。"""
+    from pipeline.topic import fetch_topics
+    topics = fetch_topics(category=category, take=int(count), cheat_root=str(CHEAT_ROOT))
+    table = [[t["title"], t.get("source", ""), t["candidate_id"][:8]] for t in topics]
+    state = {"topics": topics, "selected_topic": None, "scripts": [], "selected_script_id": None, "quality_passed": False}
+    return table, state, "已拉取，请在表格中选择一行"
+
+
+def wf_select_topic(evt: gr.SelectData, state):
+    """Step 1: 选中话题。"""
+    row = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+    topics = state.get("topics", [])
+    if row >= len(topics):
+        return state, "选择无效", gr.update()
+    topic = topics[row]
+    state["selected_topic"] = topic
+    info = f"**已选**: {topic['title']}\n\n{topic.get('snapshot_text', '')[:300]}..."
+    return state, info, gr.update(interactive=True)
+
+
+def wf_gen_cb(state):
+    """Step 2: 逐个生成候选脚本，yield 进度。"""
+    from pipeline.script import generate_script, _SCRIPT_STYLES
+    topic = state.get("selected_topic")
+    if not topic:
+        yield state, "请先选择话题", gr.update(), ""
+        return
+
+    scripts = []
+    for i in range(3):
+        yield state, f"⏳ 正在生成候选 {i+1}/3...", gr.update(), ""
+        style = _SCRIPT_STYLES[i % len(_SCRIPT_STYLES)]
+        styled_topic = dict(topic)
+        styled_topic["style_hint"] = style
+        try:
+            result = generate_script(styled_topic, config)
+            scripts.append(result)
+        except Exception:
+            err = traceback.format_exc()
+            yield state, f"⚠️ 候选 {i+1} 失败:\n```\n{err}\n```", gr.update(), ""
+            continue
+
+    if not scripts:
+        yield state, "❌ 全部候选生成失败", gr.update(), ""
+        return
+
+    state["scripts"] = scripts
+    state["selected_script_id"] = None
+    state["quality_passed"] = False
+
+    from pipeline.script import _SCRIPT_STYLES as styles
+    choices = []
+    for j, s in enumerate(scripts):
+        style_name = styles[j].split("：")[0] if j < len(styles) else f"候选 {j+1}"
+        choices.append(f"候选 {j+1} | {s['script_id']} | {style_name} | {s['title']}")
+
+    status = f"✅ 生成 {len(scripts)}/3 个候选，请选择"
+    yield state, status, gr.update(choices=choices, interactive=True, value=None), ""
+
+
+def wf_select_script(evt: gr.SelectData, state):
+    """Step 2: 选中候选脚本。"""
+    if evt.value is None:
+        return state, "", gr.update()
+    sid = parse_script_id(evt.value)
+    if not sid:
+        return state, "选择无效", gr.update()
+    state["selected_script_id"] = sid
+    state["quality_passed"] = False
+    # 读 draft.md 预览
+    draft_path = CHEAT_ROOT / "scripts" / sid / "draft.md"
+    preview = ""
+    if draft_path.exists():
+        preview = load_file_text(str(draft_path), 2000)
+    return state, preview, gr.update(interactive=True)
+
+
+def wf_quality_cb(state):
+    """Step 3: 质控打分。"""
+    from pipeline.quality import quality_check
+    sid = state.get("selected_script_id")
+    if not sid:
+        yield state, "请先选择候选脚本", gr.update(), gr.update(), gr.update()
+        return
+
+    # 禁用质控按钮防重复点击
+    yield state, "⏳ 正在质控...", gr.update(), gr.update(), gr.update(interactive=False)
+    try:
+        result = quality_check(sid, config)
+    except Exception:
+        err = traceback.format_exc()
+        yield state, f"❌ 质控失败:\n```\n{err}\n```", gr.update(), gr.update(), gr.update(interactive=True)
+        return
+
+    score = result.get("score", {})
+    passed = result.get("passed", False)
+    composite = score.get("composite", "?")
+
+    # 加载详细数据用于渲染
+    score_path = CHEAT_ROOT / "scripts" / sid / "score.json"
+    score_data = json.loads(score_path.read_text("utf-8")) if score_path.exists() else {}
+    pred_path = CHEAT_ROOT / "predictions" / f"{sid}.json"
+    pred = json.loads(pred_path.read_text("utf-8")) if pred_path.exists() else {}
+
+    md = f"**综合分: {composite}** | {'✅ 通过' if passed else '❌ 未通过'}\n\n"
+    if score_data:
+        md += render_score_table(score_data) + "\n\n"
+    if pred:
+        md += render_prediction_table(pred)
+
+    state["quality_passed"] = passed
+    if passed:
+        yield state, md, gr.update(visible=True), gr.update(), gr.update(interactive=False)
+    else:
+        md += "\n\n⚠️ 未达到阈值，请重新生成候选"
+        yield state, md, gr.update(visible=False), gr.update(), gr.update(interactive=True)
+
+
+def wf_go_cb(state):
+    """Step 3: 确认继续，解锁 Step 4。"""
+    return gr.update(interactive=True)
+
+
+def wf_pipeline_cb(state, render_mode):
+    """Step 4: TTS → 渲染 → 导出。"""
+    sid = state.get("selected_script_id")
+    if not sid:
+        yield "请先完成质控", None, "", gr.update()
+        return
+
+    cfg = dict(config)
+    cfg["video"] = dict(config["video"])
+    cfg["video"]["render_mode"] = render_mode
+    cfg["paths"] = dict(config["paths"])
+
+    # 禁用按钮防重复点击
+    pipe_disabled = gr.update(interactive=False)
+
+    # TTS
+    yield "⏳ [1/3] TTS...", None, "", pipe_disabled
+    with tts_lock:
+        tts_result, tts_err = safe_call(generate_audio, sid, cfg)
+    if tts_err:
+        yield f"❌ TTS 失败:\n```\n{tts_err}\n```", None, "", gr.update(interactive=True)
+        return
+
+    # Render
+    yield "⏳ [2/3] 渲染...", None, "", pipe_disabled
+    render_result, render_err = safe_call(render_video, sid, cfg)
+    if render_err:
+        yield f"❌ 渲染失败:\n```\n{render_err}\n```", None, "", gr.update(interactive=True)
+        return
+
+    # Export
+    yield "⏳ [3/3] 导出...", None, "", pipe_disabled
+    export_result, export_err = safe_call(export_package, sid, cfg)
+    if export_err:
+        yield f"❌ 导出失败:\n```\n{export_err}\n```", None, "", gr.update(interactive=True)
+        return
+
+    # 结果摘要
+    out_dir = Path(export_result)
+    title = load_file_text(out_dir / "title.txt", 200).strip()
+    tags = load_file_text(out_dir / "tags.txt", 200).strip()
+    report = _read_render_report(sid)
+
+    summary = (
+        f"✅ 全部完成\n\n"
+        f"**发布包**: `{export_result}`\n"
+        f"**视频**: `{render_result}`\n"
+        f"**标题**: {title}\n"
+        f"**标签**: {tags}{report}"
+    )
+    yield summary, existing_path(render_result), export_result, pipe_disabled
+
+
 # ── 回调：Tab 6 复盘 ─────────────────────────────────────────────────────
 
 
@@ -818,6 +998,96 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 fn=retro_cb,
                 inputs=[retro_dropdown, actual_views, actual_likes, actual_comments],
                 outputs=[retro_status, retro_report],
+            )
+
+        # ════════════════════════════════════════════════════════════════
+        # Tab 8: 工作流
+        # ════════════════════════════════════════════════════════════════
+        with gr.Tab("🔄 工作流"):
+            wf_state = gr.State({
+                "topics": [], "selected_topic": None,
+                "scripts": [], "selected_script_id": None, "quality_passed": False,
+            })
+
+            # Step 1: 拉取选题
+            gr.Markdown("### ① 拉取选题")
+            with gr.Row():
+                wf_cat = gr.Dropdown(
+                    choices=["ai-models", "ai-products", "ai-industry", "ai-tips"],
+                    value="ai-models", label="分类",
+                )
+                wf_fetch_n = gr.Slider(5, 20, value=10, step=1, label="数量")
+                btn_wf_fetch = gr.Button("拉取", variant="primary")
+            wf_topics_df = gr.Dataframe(
+                headers=["标题", "来源", "ID"], interactive=False, label="候选话题",
+            )
+            wf_topic_info = gr.Markdown("在表格中选择一行")
+
+            # Step 2: 生成候选
+            gr.Markdown("### ② 生成候选脚本")
+            btn_wf_gen = gr.Button("生成 3 个候选", variant="primary", interactive=False)
+            wf_gen_status = gr.Markdown("")
+            wf_script_radio = gr.Radio(choices=[], label="选择候选", interactive=False)
+            wf_script_preview = gr.Markdown("")
+
+            # Step 3: 质控
+            gr.Markdown("### ③ 质控打分")
+            btn_wf_quality = gr.Button("运行质控", variant="primary", interactive=False)
+            wf_quality_md = gr.Markdown("")
+            btn_wf_go = gr.Button("确认，继续 ▶", variant="stop", visible=False)
+
+            # Step 4: 一键生成
+            gr.Markdown("### ④ 一键生成")
+            wf_rm = gr.Radio(
+                choices=["gradient", "footage"], value="gradient", label="渲染模式",
+            )
+            btn_wf_pipe = gr.Button("TTS → 渲染 → 导出", variant="stop", interactive=False)
+            wf_pipe_status = gr.Markdown("")
+            wf_pipe_video = gr.Video(label="视频")
+            wf_export_md = gr.Markdown("")
+
+            # ── 事件绑定 ──
+            # Step 1
+            btn_wf_fetch.click(
+                fn=wf_fetch_cb,
+                inputs=[wf_cat, wf_fetch_n],
+                outputs=[wf_topics_df, wf_state, wf_topic_info],
+            )
+            wf_topics_df.select(
+                fn=wf_select_topic,
+                inputs=[wf_state],
+                outputs=[wf_state, wf_topic_info, btn_wf_gen],
+            )
+
+            # Step 2
+            btn_wf_gen.click(
+                fn=wf_gen_cb,
+                inputs=[wf_state],
+                outputs=[wf_state, wf_gen_status, wf_script_radio, wf_script_preview],
+            )
+            wf_script_radio.change(
+                fn=wf_select_script,
+                inputs=[wf_state],
+                outputs=[wf_state, wf_script_preview, btn_wf_quality],
+            )
+
+            # Step 3
+            btn_wf_quality.click(
+                fn=wf_quality_cb,
+                inputs=[wf_state],
+                outputs=[wf_state, wf_quality_md, btn_wf_go, btn_wf_pipe, btn_wf_quality],
+            )
+            btn_wf_go.click(
+                fn=wf_go_cb,
+                inputs=[wf_state],
+                outputs=[btn_wf_pipe],
+            )
+
+            # Step 4
+            btn_wf_pipe.click(
+                fn=wf_pipeline_cb,
+                inputs=[wf_state, wf_rm],
+                outputs=[wf_pipe_status, wf_pipe_video, wf_export_md, btn_wf_pipe],
             )
 
 

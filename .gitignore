@@ -36,6 +36,9 @@ dist/
 *.mp3
 test_tts.mp3
 
+# Logs
+app.log
+
 # Cheat state (runtime)
 cheat/.cheat-state.json
 cheat/videos/

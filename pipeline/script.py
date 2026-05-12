@@ -29,6 +29,12 @@ SCRIPT_SYSTEM_PROMPT = """你是一位 AI 领域的短视频博主，风格口�
   ]
 }"""
 
+_SCRIPT_STYLES = [
+    "强钩子观点型：开头直接抛出反直觉观点，用情绪化语言抓注意力",
+    "信息密度解释型：密集信息量，用数据和案例支撑，节奏紧凑",
+    "争议反转型：先抛主流观点再反驳，制造认知冲突",
+]
+
 
 def generate_script(topic: dict, config: dict) -> dict:
     """LLM 生成分段脚本。
@@ -42,6 +48,10 @@ def generate_script(topic: dict, config: dict) -> dict:
 标题：{topic['title']}
 背景信息：{topic.get('snapshot_text', '')}
 来源：{topic.get('url', '')}"""
+
+    style = topic.get("style_hint", "")
+    if style:
+        user_prompt += f"\n风格要求：{style}"
 
     api_cfg = config["api"]
     model_cfg = config["models"]
@@ -101,3 +111,15 @@ def generate_script(topic: dict, config: dict) -> dict:
         "script_text": script_text,
         "script_dir": str(script_dir),
     }
+
+
+def generate_scripts(topic: dict, config: dict, count: int = 3) -> list[dict]:
+    """为同一话题生成 count 个不同风格的候选脚本（批量工具函数）。"""
+    results = []
+    for i in range(count):
+        style = _SCRIPT_STYLES[i % len(_SCRIPT_STYLES)]
+        styled_topic = dict(topic)
+        styled_topic["style_hint"] = style
+        result = generate_script(styled_topic, config)
+        results.append(result)
+    return results
