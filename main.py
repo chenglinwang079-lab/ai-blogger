@@ -373,6 +373,32 @@ def cmd_footage(args: argparse.Namespace, config: dict) -> None:
                 print(f"  {item['path']}{reason}")
             print()
 
+    elif args.footage_action == "stats":
+        from pipeline.footage_stats import load_all_reports, aggregate_stats, per_script_stats, format_stats_markdown
+        dist_dir = PROJECT_ROOT / config["paths"].get("output_dir", "dist")
+        reports = load_all_reports(dist_dir)
+        if not reports:
+            print("暂无 render_report.json 数据")
+            return
+        if args.script_id:
+            reports = [r for r in reports if r["script_id"] == args.script_id]
+            if not reports:
+                print(f"未找到 script_id={args.script_id} 的渲染报告")
+                return
+        agg = aggregate_stats(reports)
+        ps = per_script_stats(reports)
+        print(format_stats_markdown(agg, ps))
+
+    elif args.footage_action == "missed":
+        from pipeline.footage_stats import load_all_reports, collect_missed_keywords, format_missed_keywords_markdown
+        dist_dir = PROJECT_ROOT / config["paths"].get("output_dir", "dist")
+        reports = load_all_reports(dist_dir)
+        if not reports:
+            print("暂无 render_report.json 数据")
+            return
+        missed = collect_missed_keywords(reports)
+        print(format_missed_keywords_markdown(missed, top_n=args.top))
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -439,6 +465,12 @@ def main():
     p_enable.set_defaults(func=cmd_footage)
     p_disabled = footage_sub.add_parser("disabled", help="查看黑名单")
     p_disabled.set_defaults(func=cmd_footage)
+    p_stats = footage_sub.add_parser("stats", help="素材命中率统计")
+    p_stats.add_argument("--script-id", type=str, help="指定脚本 ID")
+    p_stats.set_defaults(func=cmd_footage)
+    p_missed = footage_sub.add_parser("missed", help="未命中关键词 Top N")
+    p_missed.add_argument("--top", type=int, default=20, help="显示前 N 个")
+    p_missed.set_defaults(func=cmd_footage)
 
     args = parser.parse_args()
     config = load_config(args.config)
