@@ -4,55 +4,139 @@ import json
 import logging
 import re
 import shutil
-import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from pipeline.image_utils import resolve_font_path, wrap_text
+
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# 根目录导出（原有逻辑）
+# 缩略图生成
 # ---------------------------------------------------------------------------
 
+def _extract_keyword(title: str) -> str:
+    """从标题提取关键词（用于缩略图大字展示）。
+
+    按中文标点分割取第一段，去除引号/书名号/括号，截断到 8 中文字符 / 16 英文字符。
+    """
+    # 按标点分割取第一段
+    parts = re.split(r'[？！。，、；：""''《》（）?!.,;]', title)
+    keyword = parts[0].strip() if parts else title.strip()
+
+    # 去除残留标点
+    keyword = re.sub(r'["\'《》（）「」『』【】\(\)\[\]]', '', keyword).strip()
+
+    # 截断：中文字符 ≤8，英文字符 ≤16
+    cjk_count = 0
+    cut_idx = 0
+    for i, ch in enumerate(keyword):
+        is_cjk = '一' <= ch <= '鿿'
+        if is_cjk:
+            cjk_count += 1
+        if cjk_count > 8 or (not is_cjk and i > 16):
+            cut_idx = i
+            break
+    else:
+        cut_idx = len(keyword)
+    keyword = keyword[:cut_idx].strip()
+
+    # 过短时 fallback
+    if len(keyword) < 2:
+        keyword = title[:8].strip()
+
+    return keyword
+
+
 def _generate_thumbnail(title: str, output_path: Path, config: dict, *, width: int = 1280, height: int = 720) -> None:
-    """生成缩略图：渐变背景 + 居中标题文字。"""
-    img = Image.new("RGB", (width, height))
+    """生成缩略图 v2：渐变背景 + 关键词大字 + 标题小字 + 装饰元素。"""
+    # 读取 thumbnail 配置
+    thumb_cfg = config.get("thumbnail", {})
+    keyword_ratio = thumb_cfg.get("keyword_ratio", 1.8)
+    accent_rgb = tuple(int(x) for x in thumb_cfg.get("accent_color", "100,180,255").split(","))
+
+    # 字体解析
+    font_path = resolve_font_path(config)
+    base_font_size = max(24, height // 16)
+    font_kw_size = int(base_font_size * keyword_ratio)
+
+    try:
+        font_kw = ImageFont.truetype(font_path, font_kw_size) if font_path else ImageFont.load_default()
+        font_title = ImageFont.truetype(font_path, base_font_size) if font_path else ImageFont.load_default()
+    except (OSError, IOError):
+        font_kw = ImageFont.load_default()
+        font_title = ImageFont.load_default()
+
+    # 渐变背景（3 色停止点）
+    img = Image.new("RGBA", (width, height))
     draw = ImageDraw.Draw(img)
     for y in range(height):
         ratio = y / height
-        r = int(15 + 25 * ratio)
-        g = int(10 + 5 * ratio)
-        b = int(50 + 30 * ratio)
-        draw.line([(0, y), (width, y)], fill=(r, g, b))
+        if ratio < 0.5:
+            t = ratio * 2
+            r = int(8 + (20 - 8) * t)
+            g = int(5 + (15 - 5) * t)
+            b = int(25 + (60 - 25) * t)
+        else:
+            t = (ratio - 0.5) * 2
+            r = int(20 + (35 - 20) * t)
+            g = int(15 + (25 - 15) * t)
+            b = int(60 + (80 - 60) * t)
+        draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
 
-    font_path = None
-    for candidate in [
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/simhei.ttf",
-    ]:
-        if Path(candidate).exists():
-            font_path = candidate
-            break
+    # 底部渐变遮罩（底部 30%，从透明到 40% 黑）
+    mask_top = int(height * 0.7)
+    for y in range(mask_top, height):
+        alpha = int(102 * (y - mask_top) / (height - mask_top))  # 102 = 255 * 0.4
+        draw.line([(0, y), (width, y)], fill=(0, 0, 0, alpha))
 
-    # 字号按画布高度自适应
-    font_size = max(24, height // 16)
-    font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
+    # 提取关键词
+    keyword = _extract_keyword(title)
 
-    # 每行字符数按画布宽度自适应
-    chars_per_line = max(8, width // (font_size + 4))
-    wrapped = textwrap.fill(title, width=chars_per_line)
-    bbox = draw.textbbox((0, 0), wrapped, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    x = (width - tw) // 2
-    y = (height - th) // 2
+    # 关键词大字（居中于上 1/3 区域）
+    margin = int(width * 0.08)
+    max_text_w = width - margin * 2
+    kw_lines = wrap_text(keyword, font_kw, max_text_w, draw)[:3]
+    line_h_kw = font_kw_size + 12
+    total_h_kw = line_h_kw * len(kw_lines)
+    y_kw_start = height // 3 - total_h_kw // 2
 
-    draw.text((x + 2, y + 2), wrapped, fill=(0, 0, 0), font=font)
-    draw.text((x, y), wrapped, fill="white", font=font)
+    for i, line in enumerate(kw_lines):
+        bbox = draw.textbbox((0, 0), line, font=font_kw)
+        tw = bbox[2] - bbox[0]
+        x = (width - tw) // 2
+        y = y_kw_start + i * line_h_kw
+        draw.text((x, y), line, fill="white", font=font_kw, stroke_width=2, stroke_fill="black")
 
-    img.save(str(output_path), "PNG")
+    # 装饰分割线（关键词下方）
+    line_y = y_kw_start + total_h_kw + int(height * 0.03)
+    line_w = int(width * 0.4)
+    line_x = (width - line_w) // 2
+    draw.line([(line_x, line_y), (line_x + line_w, line_y)], fill=(*accent_rgb, 180), width=2)
+
+    # 标题小字（居中于下半区域）
+    title_lines = wrap_text(title, font_title, max_text_w, draw)[:4]
+    line_h_title = base_font_size + 8
+    total_h_title = line_h_title * len(title_lines)
+    y_title_start = line_y + int(height * 0.06)
+
+    # 如果标题区域超出画布底部，向上压缩
+    if y_title_start + total_h_title > height - margin:
+        y_title_start = height - margin - total_h_title
+
+    for i, line in enumerate(title_lines):
+        bbox = draw.textbbox((0, 0), line, font=font_title)
+        tw = bbox[2] - bbox[0]
+        x = (width - tw) // 2
+        y = y_title_start + i * line_h_title
+        draw.text((x, y), line, fill="white", font=font_title, stroke_width=2, stroke_fill="black")
+
+    # 输出（转 RGB 保存 PNG）
+    img_rgb = img.convert("RGB")
+    img_rgb.save(str(output_path), "PNG")
 
 
 def _export_root(script_id: str, config: dict) -> str:

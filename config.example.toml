@@ -50,6 +50,10 @@ orientation = "portrait"
 min_width = 720
 min_height = 1280
 
+[thumbnail]
+keyword_ratio = 1.8          # 关键词字号 = base_font_size * keyword_ratio
+accent_color = "100,180,255"  # 分割线颜色 RGB
+
 [export.douyin]
 title_max = 55
 desc_max = 1000
