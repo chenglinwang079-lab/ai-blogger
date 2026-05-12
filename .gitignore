@@ -40,7 +40,7 @@ dist/
 test_tts.mp3
 
 # Logs
-app.log
+*.log
 
 # Cheat state (runtime)
 cheat/.cheat-state.json
