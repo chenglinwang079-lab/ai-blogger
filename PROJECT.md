@@ -191,7 +191,7 @@ def fetch_topics(category: str = "ai-models", take: int = 10) -> list[dict]:
 
 ### pipeline/script.py
 ```python
-def generate_script(topic: dict) -> dict:
+def generate_script(topic: dict, config: dict, *, style_id: str | None = None) -> dict:
     """LLM 生成分段脚本
     输入: topic dict（至少含 title, snapshot_text）
     输出: {
@@ -199,9 +199,12 @@ def generate_script(topic: dict) -> dict:
         title: str,
         segments: [{text, visual_keyword, duration_est}],
         script_text: str,         # 纯文本版，供打分用
-        script_dir: str           # cheat/scripts/<script_id>/
+        script_dir: str,          # cheat/scripts/<script_id>/
+        style_id: str | None,     # 已解析的风格 ID
+        style_name: str | None,   # 风格中文名
     }
     创建 cheat/scripts/<script_id>/manifest.json + draft.md
+    style_id 优先级：参数 > topic["style_id"] > topic["style_hint"]
     """
 ```
 
@@ -531,6 +534,7 @@ min_height = 1280
 - ~~运营闭环基础版~~ ✅ Phase J 已完成
 - ~~缩略图质量升级~~ ✅ Phase K-1 已完成
 - ~~BGM 智能匹配~~ ✅ Phase K-2 / K-2.1 已完成
+- ~~脚本风格多样化~~ ✅ Phase K-3 已完成
 - 数字人口播（Wav2Lip/MuseTalk）
 - Playwright 自动发布
 - 每日定时生成
@@ -674,6 +678,65 @@ render_report.json BGM 字段：
 ```
 
 mode 枚举：`mute` | `manual` | `auto_fallback` | `auto`
+
+### K-3：脚本风格多样化 / 人设模板 ✅
+
+5 种可配置风格 persona，每种影响标题语气、hook 方式、段落节奏、吐槽密度、CTA 方式。
+
+| 风格 ID | 名称 | 特点 |
+|---------|------|------|
+| `serious_science` | 严肃科普 | 权威口吻，数据支撑，逻辑严密 |
+| `casual_sarcasm` | 轻松吐槽 | 口语化，吐槽密度高，反讽幽默 |
+| `business_analysis` | 商业分析 | 市场视角，融资数据，竞争格局 |
+| `story_narrative` | 故事叙事 | 起承转合，情感共鸣，画面感 |
+| `news_flash` | 快讯解读 | 开门见山，信息密度极高，短句并列 |
+
+| 组件 | 改动 |
+|------|------|
+| `assets/styles/style_catalog.json` | 风格 catalog（进 git），5 种 persona 定义 |
+| `pipeline/styles.py` | `load_style_catalog()` + `resolve_style()` + `list_styles()` |
+| `pipeline/script.py` | `generate_script(style_id=)` 三级优先级 + manifest 记录风格 |
+| `pipeline/quality.py` | `_rewrite_script(style_id=)` 保持原风格重写 |
+| `main.py` | `step --style` / `run --style` + `style list` 子命令 |
+| `app.py` | Tab 2 Dropdown + Tab 9 catalog 驱动候选生成 |
+
+style_id 优先级：参数 > `topic["style_id"]` > `topic["style_hint"]`
+
+CLI：
+```
+python main.py style list                                    # 列出可用风格
+python main.py step script --topic "..." --style casual_sarcasm  # 指定风格
+python main.py run --topic "..." --style story_narrative         # 全流程指定风格
+```
+
+manifest.json 新增字段：
+```json
+{"style_id": "casual_sarcasm", "style_name": "轻松吐槽"}
+```
+
+风格 catalog 配置（`assets/styles/style_catalog.json`，进 git）：
+
+```json
+[
+  {
+    "id": "serious_science",
+    "name": "严肃科普",
+    "system_prompt_override": "你是一位严谨的 AI 科普博主...",
+    "style_hint": "严肃科普型：权威口吻，数据支撑...",
+    "title_tone": "陈述句为主",
+    "hook_style": "冲击性数据开场",
+    "pacing": "匀速推进",
+    "metaphor_density": "低",
+    "cta_style": "理性号召",
+    "enabled": true
+  }
+]
+```
+
+- `system_prompt_override`：替换默认 system prompt（可选）
+- `style_hint`：追加到 user prompt 的风格指令（核心字段）
+- `enabled: false` 可禁用条目（不参与批量生成）
+- loader 优先读 `style_catalog.json`，不存在则 fallback 到 `.example.json`
 
 ### BGM 本地配置
 
