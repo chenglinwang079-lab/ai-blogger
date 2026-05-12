@@ -22,7 +22,8 @@ from pipeline.video import render_video
 from pipeline.script import generate_script
 from pipeline.quality import quality_check
 from pipeline.topic import fetch_topics
-from pipeline.export_pkg import export_package
+from pipeline.export_pkg import export_package, _export_platform, update_manifest_platform_exports
+from pipeline.platform_profiles import PLATFORMS
 from adapter.cheat import retro
 
 # ── Config ──────────────────────────────────────────────────────────────
@@ -530,6 +531,37 @@ def export_cb(script_id_choice: str):
     yield f"✅ 已导出到: {result}", thumb, title, desc, tags, file_list
 
 
+def export_platform_cb(script_id_choice: str, platforms: list[str]):
+    """平台适配导出。"""
+    sid = parse_script_id(script_id_choice)
+    if not sid:
+        yield "❌ 请选择脚本", {}
+        return
+    if not platforms:
+        yield "❌ 请至少选择一个平台", {}
+        return
+
+    yield f"⏳ 正在导出（根包 + {len(platforms)} 个平台）...", {}
+
+    # 根导出
+    _, err = safe_call(export_package, sid, config)
+    if err:
+        yield f"```\n{err}\n```", {}
+        return
+
+    # 逐平台适配
+    results = {}
+    for p in platforms:
+        metadata, err = safe_call(_export_platform, sid, p, config)
+        if err:
+            results[p] = {"error": err}
+        else:
+            update_manifest_platform_exports(sid, p, metadata, config)
+            results[p] = metadata
+
+    yield f"✅ 已完成 {len(platforms)} 个平台导出", results
+
+
 # ── 回调：Tab 8 工作流 ─────────────────────────────────────────────────────
 
 
@@ -806,6 +838,207 @@ def footage_health_md():
 
 
 
+# ── 回调：Tab 8 发布管理 ─────────────────────────────────────────────────
+
+
+def queue_refresh_cb(status_filter: str):
+    """刷新发布队列列表。"""
+    from pipeline.publish import list_publish_queue
+    status = status_filter if status_filter != "all" else None
+    queue = list_publish_queue(config, status=status)
+    if not queue:
+        return [], "队列为空"
+    rows = []
+    for item in queue:
+        sid = item.get("script_id", "?")
+        title = item.get("title", "?")[:30]
+        st = item.get("status", "?")
+        platforms = item.get("platforms", {})
+        plat_str = ", ".join(f"{k}:{v.get('status','?')}" for k, v in platforms.items()) if platforms else "-"
+        updated = item.get("updated_at", "?")[:19]
+        rows.append([sid, title, st, plat_str, updated])
+    return rows, f"共 {len(queue)} 条"
+
+
+def queue_select_cb(evt: gr.SelectData, queue_data: gr.State):
+    """点击队列行 → 显示详情。"""
+    try:
+        data = queue_data
+        if evt.index[0] >= len(data):
+            return "选择无效"
+        item = data[evt.index[0]]
+        return json.dumps(item, ensure_ascii=False, indent=2)
+    except Exception:
+        return "选择无效"
+
+
+def queue_refresh_with_state(status_filter: str):
+    """刷新队列并返回 State + 表格 + 状态。"""
+    from pipeline.publish import list_publish_queue
+    status = status_filter if status_filter != "all" else None
+    queue = list_publish_queue(config, status=status)
+    if not queue:
+        return [], [], "队列为空"
+    rows = []
+    for item in queue:
+        sid = item.get("script_id", "?")
+        title = item.get("title", "?")[:30]
+        st = item.get("status", "?")
+        platforms = item.get("platforms", {})
+        plat_str = ", ".join(f"{k}:{v.get('status','?')}" for k, v in platforms.items()) if platforms else "-"
+        updated = item.get("updated_at", "?")[:19]
+        rows.append([sid, title, st, plat_str, updated])
+    return rows, queue, f"共 {len(queue)} 条"
+
+
+def queue_mark_cb(script_id_choice: str, target_status: str):
+    """标记发布状态（published/failed/ready）。"""
+    sid = parse_script_id(script_id_choice)
+    if not sid:
+        return f"❌ 请选择脚本", [], [], ""
+    from pipeline.publish import update_publish_status, list_publish_queue
+    try:
+        update_publish_status(sid, config, status=target_status, platform="douyin")
+    except Exception as e:
+        return f"❌ {e}", [], [], ""
+    # 刷新
+    queue = list_publish_queue(config)
+    rows = []
+    for item in queue:
+        s = item.get("script_id", "?")
+        title = item.get("title", "?")[:30]
+        st = item.get("status", "?")
+        platforms = item.get("platforms", {})
+        plat_str = ", ".join(f"{k}:{v.get('status','?')}" for k, v in platforms.items()) if platforms else "-"
+        updated = item.get("updated_at", "?")[:19]
+        rows.append([s, title, st, plat_str, updated])
+    return f"✅ {sid} → {target_status}", rows, queue, f"共 {len(queue)} 条"
+
+
+# ── 回调：Tab 8 表现数据 + 批量复盘 ─────────────────────────────────────
+
+
+def perf_record_cb(script_id_choice, platform, views, likes, comments, shares, favorites):
+    """录入表现数据。"""
+    sid = parse_script_id(script_id_choice)
+    if not sid:
+        return "❌ 请选择脚本"
+    from pipeline.performance import record_performance
+    try:
+        data = record_performance(
+            sid, config, platform=platform or "douyin",
+            views=int(views), likes=int(likes), comments=int(comments),
+            shares=int(shares), favorites=int(favorites),
+        )
+        n = len(data["records"])
+        return f"✅ 已录入: {sid} platform={platform} views={int(views)} (共 {n} 条记录)"
+    except Exception as e:
+        return f"❌ {e}"
+
+
+def perf_latest_cb(script_id_choice, platform):
+    """查看最新表现数据。"""
+    sid = parse_script_id(script_id_choice)
+    if not sid:
+        return "请选择脚本"
+    from pipeline.performance import get_latest
+    latest = get_latest(sid, config, platform=platform or None)
+    if not latest:
+        return "无表现数据"
+    rows = ["| 平台 | 时间 | views | likes | comments | shares | favorites |",
+            "|------|------|-------|-------|----------|--------|-----------|"]
+    for plat, rec in latest.items():
+        rows.append(
+            f"| {plat} | {rec.get('captured_at','?')[:19]} | "
+            f"{rec.get('views',0)} | {rec.get('likes',0)} | "
+            f"{rec.get('comments',0)} | {rec.get('shares',0)} | "
+            f"{rec.get('favorites',0)} |"
+        )
+    return "\n".join(rows)
+
+
+def batch_retro_scan_cb():
+    """扫描待复盘脚本。"""
+    from pipeline.publish import list_publish_queue
+    from pipeline.performance import load_performance
+    published = list_publish_queue(config, status="published")
+    cheat_root = PROJECT_ROOT / config["paths"]["cheat_root"]
+    ready = []
+    skipped = []
+    for item in published:
+        sid = item["script_id"]
+        title = item.get("title", "?")[:30]
+        perf = load_performance(sid, config)
+        if not perf or not perf.get("records"):
+            skipped.append(f"{sid} ({title}) — 无表现数据")
+            continue
+        report_path = cheat_root / "videos" / sid / "report.md"
+        if report_path.exists():
+            skipped.append(f"{sid} ({title}) — 已有报告")
+            continue
+        ready.append(f"{sid} | {title}")
+    lines = [f"**待复盘**: {len(ready)} 条"]
+    if ready:
+        lines.append("")
+        for r in ready:
+            lines.append(f"- {r}")
+    if skipped:
+        lines.append(f"\n**跳过**: {len(skipped)} 条")
+        for s in skipped:
+            lines.append(f"- {s}")
+    return "\n".join(lines), ready
+
+
+def batch_retro_run_cb(platform):
+    """批量生成复盘报告。"""
+    from pipeline.publish import list_publish_queue
+    from pipeline.performance import load_performance
+    from adapter.cheat import retro as retro_fn
+    published = list_publish_queue(config, status="published")
+    cheat_root = PROJECT_ROOT / config["paths"]["cheat_root"]
+    results = []
+    for item in published:
+        sid = item["script_id"]
+        perf = load_performance(sid, config)
+        if not perf or not perf.get("records"):
+            continue
+        report_path = cheat_root / "videos" / sid / "report.md"
+        if report_path.exists():
+            continue
+        # 选择平台
+        latest = perf["records"]
+        rec = None
+        if platform:
+            for r in reversed(latest):
+                if r["platform"] == platform:
+                    rec = r
+                    break
+        else:
+            # 优先 douyin
+            for r in reversed(latest):
+                if r["platform"] == "douyin":
+                    rec = r
+                    break
+            if not rec:
+                rec = latest[-1]
+        if not rec:
+            results.append((sid, "跳过", f"无 {platform or 'douyin'} 平台数据"))
+            continue
+        actual = {
+            "views": rec.get("views", 0), "likes": rec.get("likes", 0),
+            "comments": rec.get("comments", 0), "shares": rec.get("shares", 0),
+        }
+        try:
+            retro_fn(sid, actual, config)
+            results.append((sid, "成功", ""))
+        except Exception as e:
+            results.append((sid, "失败", str(e)))
+    lines = [f"**批量复盘结果** ({len(results)} 条):"]
+    for sid, status, info in results:
+        lines.append(f"- {sid} [{status}] {info}")
+    return "\n".join(lines)
+
+
 # ── UI 构建 ──────────────────────────────────────────────────────────────
 
 CSS = """
@@ -1012,6 +1245,24 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 outputs=[exp_status, exp_thumb, exp_title, exp_desc, exp_tags, exp_files],
             )
 
+            gr.Markdown("---")
+            gr.Markdown("### 平台适配导出")
+            with gr.Row():
+                plat_checkboxes = gr.CheckboxGroup(
+                    choices=list(PLATFORMS),
+                    label="目标平台",
+                    value=[],
+                )
+                btn_plat_export = gr.Button("导出平台包", variant="primary")
+            plat_status = gr.Markdown()
+            plat_result = gr.JSON(label="平台适配结果")
+
+            btn_plat_export.click(
+                fn=export_platform_cb,
+                inputs=[exp_dropdown, plat_checkboxes],
+                outputs=[plat_status, plat_result],
+            )
+
         # ════════════════════════════════════════════════════════════════
         # Tab 2: 脚本
         # ════════════════════════════════════════════════════════════════
@@ -1102,7 +1353,117 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             )
 
         # ════════════════════════════════════════════════════════════════
-        # Tab 8: 工作流
+        # Tab 8: 发布管理
+        # ════════════════════════════════════════════════════════════════
+        with gr.Tab("8️⃣ 发布管理"):
+            queue_state = gr.State([])
+
+            with gr.Row():
+                queue_status_dd = gr.Dropdown(
+                    label="状态筛选",
+                    choices=["all", "draft", "ready", "scheduled", "published", "failed"],
+                    value="all",
+                    interactive=True,
+                )
+                btn_queue_refresh = gr.Button("刷新")
+
+            queue_status_md = gr.Markdown("点击刷新加载队列")
+            queue_table = gr.Dataframe(
+                headers=["script_id", "标题", "状态", "平台", "更新时间"],
+                interactive=False,
+                label="发布队列",
+            )
+
+            with gr.Row():
+                queue_detail_dropdown = gr.Dropdown(
+                    label="选择脚本",
+                    choices=get_script_choices(),
+                    interactive=True,
+                )
+                btn_queue_published = gr.Button("标记已发布", variant="primary")
+                btn_queue_failed = gr.Button("标记失败")
+                btn_queue_ready = gr.Button("重置为 ready")
+
+            queue_action_status = gr.Markdown()
+            queue_detail_md = gr.Markdown(label="详情")
+
+            btn_queue_refresh.click(
+                fn=queue_refresh_with_state,
+                inputs=[queue_status_dd],
+                outputs=[queue_table, queue_state, queue_status_md],
+            )
+            queue_table.select(
+                fn=queue_select_cb,
+                inputs=[queue_state],
+                outputs=[queue_detail_md],
+            )
+            btn_queue_published.click(
+                fn=lambda sid: queue_mark_cb(sid, "published"),
+                inputs=[queue_detail_dropdown],
+                outputs=[queue_action_status, queue_table, queue_state, queue_status_md],
+            )
+            btn_queue_failed.click(
+                fn=lambda sid: queue_mark_cb(sid, "failed"),
+                inputs=[queue_detail_dropdown],
+                outputs=[queue_action_status, queue_table, queue_state, queue_status_md],
+            )
+            btn_queue_ready.click(
+                fn=lambda sid: queue_mark_cb(sid, "ready"),
+                inputs=[queue_detail_dropdown],
+                outputs=[queue_action_status, queue_table, queue_state, queue_status_md],
+            )
+
+            # ── 区块 2：表现数据 ──
+            gr.Markdown("---")
+            gr.Markdown("### 表现数据")
+            with gr.Row():
+                perf_dropdown = gr.Dropdown(
+                    label="选择脚本", choices=get_script_choices(), interactive=True,
+                )
+                perf_platform = gr.Textbox(label="平台", value="douyin", lines=1)
+            with gr.Row():
+                perf_views = gr.Number(label="播放量", value=0, minimum=0)
+                perf_likes = gr.Number(label="点赞", value=0, minimum=0)
+                perf_comments = gr.Number(label="评论", value=0, minimum=0)
+                perf_shares = gr.Number(label="分享", value=0, minimum=0)
+                perf_favorites = gr.Number(label="收藏", value=0, minimum=0)
+            with gr.Row():
+                btn_perf_record = gr.Button("录入", variant="primary")
+                btn_perf_latest = gr.Button("查看最新")
+            perf_status = gr.Markdown()
+
+            btn_perf_record.click(
+                fn=perf_record_cb,
+                inputs=[perf_dropdown, perf_platform, perf_views, perf_likes, perf_comments, perf_shares, perf_favorites],
+                outputs=[perf_status],
+            )
+            btn_perf_latest.click(
+                fn=perf_latest_cb,
+                inputs=[perf_dropdown, perf_platform],
+                outputs=[perf_status],
+            )
+
+            # ── 区块 3：批量复盘 ──
+            gr.Markdown("---")
+            gr.Markdown("### 批量复盘")
+            with gr.Row():
+                batch_retro_platform = gr.Textbox(label="平台（留空=优先 douyin）", value="", lines=1)
+                btn_batch_scan = gr.Button("扫描待复盘")
+                btn_batch_run = gr.Button("批量生成复盘", variant="stop")
+            batch_retro_status = gr.Markdown()
+
+            btn_batch_scan.click(
+                fn=batch_retro_scan_cb,
+                outputs=[batch_retro_status],
+            )
+            btn_batch_run.click(
+                fn=batch_retro_run_cb,
+                inputs=[batch_retro_platform],
+                outputs=[batch_retro_status],
+            )
+
+        # ════════════════════════════════════════════════════════════════
+        # Tab 9: 工作流
         # ════════════════════════════════════════════════════════════════
         with gr.Tab("🔄 工作流"):
             wf_state = gr.State({
