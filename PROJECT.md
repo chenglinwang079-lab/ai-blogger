@@ -80,7 +80,10 @@ D:\ai-blogger\
 │   ├── tts.py                     # TTS：VoxCPM2（降级 edge-tts）
 │   ├── subtitle.py                # 字幕：SRT 生成（render 内部调用）
 │   ├── video.py                   # 渲染：模板视频 + 字幕 + BGM
-│   └── export_pkg.py              # 导出：发布包
+│   ├── export_pkg.py              # 导出：发布包（支持平台适配）
+│   ├── publish.py                 # Phase J-1: 发布队列 CRUD
+│   ├── performance.py             # Phase J-2: 表现数据 CRUD
+│   └── platform_profiles.py       # Phase J-3: 平台规格加载
 ├── adapter/
 │   ├── __init__.py
 │   └── cheat.py                   # cheat-on-content 本地 adapter
@@ -89,11 +92,13 @@ D:\ai-blogger\
 │   ├── rubric_notes.md            # 评分标准
 │   ├── scripts/                   # 脚本工作区
 │   │   └── <script_id>/
-│   │       ├── manifest.json      # 元数据（title, candidate_id, created_at, steps）
+│   │       ├── manifest.json      # 元数据（title, candidate_id, created_at, steps, platform_exports）
 │   │       ├── draft.md           # 初始脚本
 │   │       ├── final.md           # 质控通过的最终版
 │   │       ├── best.md            # 重写未通过时的最高分版本
-│   │       └── score.json         # 打分缓存
+│   │       ├── score.json         # 打分缓存
+│   │       ├── publish.json       # Phase J-1: 发布状态（.gitignore）
+│   │       └── performance.json   # Phase J-2: 表现数据（.gitignore）
 │   ├── predictions/               # 盲预测（immutable）
 │   │   ├── <script_id>.json       # 机器源（结构化 JSON）
 │   │   └── <script_id>.md         # 人工审阅副本
@@ -109,7 +114,16 @@ D:\ai-blogger\
 │       ├── description.txt
 │       ├── tags.txt
 │       ├── thumbnail.png
-│       └── prediction.json        # 从 cheat/predictions/<script_id>.json 拷贝
+│       ├── prediction.json        # 从 cheat/predictions/<script_id>.json 拷贝
+│       └── platforms/             # Phase J-3：平台适配导出
+│           ├── douyin/
+│           │   ├── metadata.json  # 结构化元数据（自动发布用）
+│           │   ├── title.txt
+│           │   ├── description.txt
+│           │   ├── tags.txt
+│           │   └── thumbnail.png  # 1080x1920
+│           ├── kuaishou/
+│           └── bilibili/          # thumbnail 1920x1080
 ├── assets/
 │   ├── fonts/
 │   └── bgm/
@@ -266,8 +280,10 @@ def render_video(script_id: str, config: dict) -> str:
 
 ### pipeline/export_pkg.py
 ```python
-def export_package(script_id: str, config: dict) -> str:
+def export_package(script_id: str, config: dict, *, platform: str | None = None) -> str:
     """导出发布资料包到 dist/<script_id>/（覆盖已有文件）
+    platform=None: 根目录导出（向后兼容）
+    platform=<name>: 根目录导出 + 平台适配导出到 platforms/<platform>/
     prediction.json 从 cheat/predictions/<script_id>.json 直接拷贝
     """
 ```
@@ -299,6 +315,20 @@ python main.py retro --title "Claude 4" --views 5000 --likes 200 --comments 30
 
 # 状态查询
 python main.py status
+
+# 发布队列（Phase J-1）
+python main.py queue list
+python main.py queue show --script-id f6e5d4c3b2a1
+python main.py queue update --script-id f6e5d4c3b2a1 --status published --post-url "https://..."
+
+# 表现数据（Phase J-2）
+python main.py performance record --script-id f6e5d4c3b2a1 --platform douyin --views 1200 --likes 86
+python main.py performance latest --script-id f6e5d4c3b2a1
+python main.py retro --batch --platform douyin
+
+# 平台适配导出（Phase J-3）
+python main.py export --script-id f6e5d4c3b2a1 --platform douyin
+python main.py export --script-id f6e5d4c3b2a1 --all-platforms
 ```
 
 ## 步骤依赖（DAG）
@@ -488,8 +518,8 @@ min_height = 1280
 
 - ~~素材混剪（Pexels/Pixabay）~~ ✅ Phase H 已完成
 - ~~素材池质量与命中率优化~~ ✅ Phase I 已完成
+- ~~运营闭环基础版~~ ✅ Phase J 已完成
 - 数字人口播（Wav2Lip/MuseTalk）
-- Gradio WebUI
 - Playwright 自动发布
 - 每日定时生成
 - 步骤并行执行（tts + predict）
@@ -543,3 +573,64 @@ D:\voxcpm\venv\Scripts\python.exe main.py footage aliases --category tech
 - `pipeline/stock.py`: 新增 `health_check_external()`，import 改用 keyword_aliases
 - `main.py`: `footage` 子命令组（stats/missed/health/disable/enable/disabled/aliases）
 - `app.py`: Tab 7 素材管理面板（统计/未命中/健康检查按钮）
+
+## Phase J：运营闭环基础版 ✅
+
+发布队列 → 表现数据录入 → 批量复盘 → 平台适配导出，打通从"内容生产完成"到"发布就绪"的闭环。
+
+### J-1：发布队列管理
+
+per-script `publish.json` 跟踪发布状态（draft/ready/scheduled/published/failed），export 时自动 set ready（不覆盖 scheduled/published）。
+
+```powershell
+python main.py queue list
+python main.py queue show --script-id <id>
+python main.py queue update --script-id <id> --status published --post-url "https://..."
+python main.py queue init --script-id <id>
+```
+
+### J-2：历史表现数据库 + retro 自动化
+
+per-script `performance.json`（append-only，按 captured_at 升序），retro 支持 `--from-performance` 和 `--batch`。
+
+```powershell
+python main.py performance record --script-id <id> --platform douyin --views 1200 --likes 86 --comments 12 --shares 5
+python main.py performance latest --script-id <id>
+python main.py performance list
+python main.py retro --script-id <id> --from-performance --platform douyin
+python main.py retro --batch --platform douyin
+```
+
+### J-3：平台适配导出
+
+LLM 适配标题/描述/标签到各平台规范，规则截断 fallback。每个平台目录含 `metadata.json`（自动发布用）。
+
+| 平台 | 标题上限 | 标签格式 | 封面尺寸 |
+|------|---------|---------|---------|
+| douyin | 55 | `#话题` 空格分隔 | 1080×1920 |
+| kuaishou | 30 | `#话题` 空格分隔 | 1080×1920 |
+| bilibili | 80 | 逗号分隔 | 1920×1080 |
+
+```powershell
+python main.py export --script-id <id> --platform douyin
+python main.py export --script-id <id> --all-platforms
+```
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `pipeline/publish.py` | 发布队列 CRUD |
+| `pipeline/performance.py` | 表现数据 CRUD |
+| `pipeline/platform_profiles.py` | 平台规格加载 |
+
+### 关键改动
+
+- `pipeline/export_pkg.py`: root/platform 拆分，`_adapt_metadata()` LLM 适配 + fallback
+- `main.py`: queue/performance 子命令组，export `--platform` / `--all-platforms`
+- `app.py`: Tab 8 发布管理（队列 + 表现数据 + 批量复盘），Tab 5 平台选择导出
+- `config.toml` + `config.example.toml`: 新增 `[export.douyin/kuaishou/bilibili]`
+
+### 下一步
+
+Phase K-1：缩略图质量升级 — 平台适配封面已生成，提升封面点击率直接影响 performance/retro 数据质量。
