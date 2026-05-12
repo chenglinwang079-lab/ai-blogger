@@ -47,3 +47,5 @@ cheat/.cheat-state.json
 cheat/videos/
 cheat/predictions/
 cheat/scripts/
+cheat/scripts/*/publish.json
+cheat/scripts/*/performance.json

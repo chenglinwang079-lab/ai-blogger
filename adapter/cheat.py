@@ -144,20 +144,32 @@ def retro(script_id: str, actual: dict, config: dict) -> dict:
 
     # 对比
     report_lines = [f"# 复盘报告 — {script_id}\n"]
-    report_lines.append(f"**标题**: {prediction.get('title', '?')}\n")
+    # 标题从 manifest.json 读取（prediction 中无 title 字段）
+    manifest_path = cheat_root / "scripts" / script_id / "manifest.json"
+    title = "?"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        title = manifest.get("title", "?")
+    report_lines.append(f"**标题**: {title}\n")
     report_lines.append("## 预测 vs 实际\n")
     report_lines.append("| 指标 | P50 | P80 | 实际 | 偏差 |")
     report_lines.append("|------|-----|-----|------|------|")
 
     deviations = {}
-    for metric in ["views", "likes", "comments"]:
-        p50 = prediction.get(metric, {}).get("p50", 0)
-        p80 = prediction.get(metric, {}).get("p80", 0)
+    for metric in ["views", "likes", "comments", "shares"]:
+        pred_metric = prediction.get(metric)
+        if pred_metric:
+            p50 = pred_metric.get("p50", 0)
+            p80 = pred_metric.get("p80", 0)
+        else:
+            p50, p80 = 0, 0
         act = actual.get(metric, 0)
         dev_pct = ((act - p50) / p50 * 100) if p50 else None
-        deviation = f"{dev_pct:.0f}%" if dev_pct is not None else "N/A"
+        deviation = f"{dev_pct:.0f}%" if dev_pct is not None else ("-" if not pred_metric else "N/A")
         deviations[metric] = round(dev_pct, 1) if dev_pct is not None else None
-        report_lines.append(f"| {metric} | {p50} | {p80} | {act} | {deviation} |")
+        p50_str = str(p50) if pred_metric else "-"
+        p80_str = str(p80) if pred_metric else "-"
+        report_lines.append(f"| {metric} | {p50_str} | {p80_str} | {act} | {deviation} |")
 
     report_lines.extend([
         f"\n**预测档位**: {prediction.get('bucket', '?')}",
