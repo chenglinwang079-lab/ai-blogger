@@ -28,6 +28,13 @@ def quality_check(script_id: str, config: dict) -> dict:
     if not draft_path.exists():
         raise FileNotFoundError(f"脚本不存在: {draft_path}")
 
+    # 读取 manifest（获取 style_id + 后续复用）
+    manifest_path = script_dir / "manifest.json"
+    manifest = {}
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    style_id = manifest.get("style_id")
+
     script_text = draft_path.read_text(encoding="utf-8")
     rubric = load_rubric(config)
     threshold = config["quality"]["score_threshold"]
@@ -58,9 +65,7 @@ def quality_check(script_id: str, config: dict) -> dict:
             write_prediction(script_id, score_result, prediction, config)
 
             # 更新 manifest（最后更新，确保前面都成功）
-            manifest_path = script_dir / "manifest.json"
-            if manifest_path.exists():
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest:
                 if "score" not in manifest["completed_steps"]:
                     manifest["completed_steps"].append("score")
                 if "predict" not in manifest["completed_steps"]:
@@ -74,7 +79,7 @@ def quality_check(script_id: str, config: dict) -> dict:
 
         # 未通过 → 重写
         if attempt < max_rewrites:
-            script_text = _rewrite_script(script_text, score_result, config)
+            script_text = _rewrite_script(script_text, score_result, config, style_id=style_id)
             rewrites += 1
 
     # 重写用尽，保存 best.md
@@ -82,14 +87,21 @@ def quality_check(script_id: str, config: dict) -> dict:
     return {"passed": False, "score": best_score, "rewrites": rewrites}
 
 
-def _rewrite_script(script_text: str, score_result: dict, config: dict) -> str:
+def _rewrite_script(script_text: str, score_result: dict, config: dict, *, style_id: str | None = None) -> str:
     """根据打分反馈重写脚本。"""
     feedback = "\n".join(
         f"- {d['name']}: {d['score']}/10 — {d['reason']}"
         for d in score_result["dimensions"]
     )
 
-    prompt = f"""请根据以下反馈重写短视频口播脚本，保持口语化风格：
+    style_instruction = "保持口语化风格"
+    if style_id:
+        from pipeline.styles import resolve_style
+        entry = resolve_style(style_id)
+        if entry:
+            style_instruction = f"保持「{entry['name']}」风格：{entry['style_hint']}"
+
+    prompt = f"""请根据以下反馈重写短视频口播脚本，{style_instruction}：
 
 当前评分（{score_result['composite']}/10）：
 {feedback}

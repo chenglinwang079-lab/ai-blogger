@@ -36,29 +36,48 @@ _SCRIPT_STYLES = [
 ]
 
 
-def generate_script(topic: dict, config: dict) -> dict:
+def generate_script(topic: dict, config: dict, *, style_id: str | None = None) -> dict:
     """LLM 生成分段脚本。
 
     输入: topic dict（至少含 title, snapshot_text）
-    输出: {script_id, title, segments, script_text, script_dir}
+    输出: {script_id, title, segments, script_text, script_dir, style_id, style_name}
     创建 cheat/scripts/<script_id>/manifest.json + draft.md
+
+    style_id 优先级：参数 > topic["style_id"] > topic["style_hint"]
+    - 参数 style_id 非空但无效 → ValueError
+    - topic["style_id"] 无效 → 静默 fallback
     """
+    from pipeline.styles import resolve_style
+
+    # ── 风格解析 ──
+    style_entry = None
+    if style_id:
+        style_entry = resolve_style(style_id)
+        if not style_entry:
+            available = [e["id"] for e in __import__("pipeline.styles", fromlist=["list_styles"]).list_styles()]
+            raise ValueError(f"未知风格: {style_id}，可用: {', '.join(available) if available else '(无)'}")
+    elif topic.get("style_id"):
+        style_entry = resolve_style(topic["style_id"])
+        # topic 残留无效 style_id → 静默 fallback
+
+    system_content = (style_entry.get("system_prompt_override") if style_entry else None) or SCRIPT_SYSTEM_PROMPT
+    style_hint = (style_entry["style_hint"] if style_entry else None) or topic.get("style_hint", "")
+
     user_prompt = f"""请根据以下选题生成短视频口播脚本：
 
 标题：{topic['title']}
 背景信息：{topic.get('snapshot_text', '')}
 来源：{topic.get('url', '')}"""
 
-    style = topic.get("style_hint", "")
-    if style:
-        user_prompt += f"\n风格要求：{style}"
+    if style_hint:
+        user_prompt += f"\n风格要求：{style_hint}"
 
     api_cfg = config["api"]
     model_cfg = config["models"]
 
     response = call_llm(
         messages=[
-            {"role": "system", "content": SCRIPT_SYSTEM_PROMPT},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt},
         ],
         model=model_cfg["script_model"],
@@ -92,10 +111,14 @@ def generate_script(topic: dict, config: dict) -> dict:
     (script_dir / "draft.md").write_text("\n".join(draft_lines), encoding="utf-8")
 
     # manifest.json
+    resolved_style_id = style_entry["id"] if style_entry else None
+    resolved_style_name = style_entry["name"] if style_entry else None
     manifest = {
         "script_id": script_id,
         "candidate_id": topic.get("candidate_id"),
         "title": title,
+        "style_id": resolved_style_id,
+        "style_name": resolved_style_name,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "completed_steps": ["topic", "script"],
         "current_step": "score",
@@ -110,16 +133,29 @@ def generate_script(topic: dict, config: dict) -> dict:
         "segments": segments,
         "script_text": script_text,
         "script_dir": str(script_dir),
+        "style_id": resolved_style_id,
+        "style_name": resolved_style_name,
     }
 
 
-def generate_scripts(topic: dict, config: dict, count: int = 3) -> list[dict]:
+def generate_scripts(topic: dict, config: dict, count: int = 3, style_ids: list[str] | None = None) -> list[dict]:
     """为同一话题生成 count 个不同风格的候选脚本（批量工具函数）。"""
+    from pipeline.styles import load_style_catalog
+
+    if style_ids:
+        catalog = [{"id": sid} for sid in style_ids]
+    else:
+        catalog = load_style_catalog()
+        if not catalog:
+            catalog = [{"id": None, "style_hint": s} for s in _SCRIPT_STYLES]
+
     results = []
     for i in range(count):
-        style = _SCRIPT_STYLES[i % len(_SCRIPT_STYLES)]
+        entry = catalog[i % len(catalog)]
         styled_topic = dict(topic)
-        styled_topic["style_hint"] = style
-        result = generate_script(styled_topic, config)
+        if "style_hint" in entry:
+            styled_topic["style_hint"] = entry["style_hint"]
+        style_id = entry.get("id")
+        result = generate_script(styled_topic, config, style_id=style_id)
         results.append(result)
     return results

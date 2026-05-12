@@ -117,7 +117,7 @@ def _load_manifest(script_id: str, config: dict) -> dict | None:
     return None
 
 
-def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = None, config: dict | None = None, force: bool = False, bgm_id: str | None = None, mute: bool = False) -> dict | None:
+def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = None, config: dict | None = None, force: bool = False, bgm_id: str | None = None, mute: bool = False, style_id: str | None = None) -> dict | None:
     """执行单步，返回结果 dict。"""
     from pipeline import topic as topic_mod
     from pipeline import script as script_mod
@@ -133,7 +133,7 @@ def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = N
         if not topic:
             logger.error("script 步骤需要 --topic 或从 topic 步骤结果获取")
             return None
-        return script_mod.generate_script(topic, config)
+        return script_mod.generate_script(topic, config, style_id=style_id)
 
     elif step == "score":
         if not script_id:
@@ -200,7 +200,7 @@ def cmd_run(args: argparse.Namespace, config: dict) -> None:
 
     for step in steps_to_run:
         logger.info(f"--- 步骤: {step} ---")
-        result = _run_step(step, topic=topic, script_id=script_id, config=config, force=args.force)
+        result = _run_step(step, topic=topic, script_id=script_id, config=config, force=args.force, style_id=getattr(args, "style", None))
 
         if result is None:
             logger.error(f"步骤 {step} 失败，终止")
@@ -237,6 +237,7 @@ def cmd_step(args: argparse.Namespace, config: dict) -> None:
         force=getattr(args, "force", False),
         bgm_id=getattr(args, "bgm_id", None),
         mute=getattr(args, "mute", False),
+        style_id=getattr(args, "style", None),
     )
 
     if result is None:
@@ -732,6 +733,28 @@ def cmd_bgm(args: argparse.Namespace, config: dict) -> None:
         sys.exit(1)
 
 
+def cmd_style(args: argparse.Namespace, config: dict) -> None:
+    """style 命令：脚本风格管理。"""
+    from pipeline.styles import list_styles
+
+    action = getattr(args, "style_action", None)
+
+    if action == "list":
+        entries = list_styles()
+        if not entries:
+            print("\n无可用风格。请检查 assets/styles/style_catalog.json")
+        else:
+            print(f"\n=== 脚本风格 ({len(entries)} 种) ===")
+            for e in entries:
+                hint = e.get("style_hint", "")[:50]
+                print(f"  {e['id']:<22s} {e['name']:<10s} {hint}...")
+        print()
+
+    else:
+        logger.error(f"未知 style 子命令: {action}")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ai-blogger",
@@ -746,6 +769,7 @@ def main():
     p_run.add_argument("--script-id", type=str, help="从已有脚本恢复")
     p_run.add_argument("--until", type=str, help="执行到指定步骤为止")
     p_run.add_argument("--force", action="store_true", help="忽略 checkpoint，从头重跑")
+    p_run.add_argument("--style", type=str, default=None, help="脚本风格 ID（如 serious_science）")
     p_run.set_defaults(func=cmd_run)
 
     # step
@@ -758,6 +782,7 @@ def main():
     p_step.add_argument("--force", action="store_true", help="强制重跑")
     p_step.add_argument("--bgm-id", type=str, default=None, help="手动指定 BGM ID")
     p_step.add_argument("--mute", action="store_true", help="静音（不加 BGM）")
+    p_step.add_argument("--style", type=str, default=None, help="脚本风格 ID（如 serious_science）")
     p_step.set_defaults(func=cmd_step)
 
     # export
@@ -864,9 +889,15 @@ def main():
     p_bgm_list = bgm_sub.add_parser("list", help="列出可用 BGM")
     p_bgm_list.set_defaults(func=cmd_bgm)
 
+    # style
+    p_style = subparsers.add_parser("style", help="脚本风格管理")
+    style_sub = p_style.add_subparsers(dest="style_action", required=True)
+    p_style_list = style_sub.add_parser("list", help="列出可用风格")
+    p_style_list.set_defaults(func=cmd_style)
+
     args = parser.parse_args()
     config = load_config(args.config)
-    validate_config(config, require_api=(args.command not in ("status", "stock", "footage", "queue", "performance", "retro", "bgm", "step")))
+    validate_config(config, require_api=(args.command not in ("status", "stock", "footage", "queue", "performance", "retro", "bgm", "step", "style")))
     ensure_directories(config)
 
     args.func(args, config)
