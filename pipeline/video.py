@@ -248,7 +248,8 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
             else:
                 bgm_path, bgm_info = select_bgm(script_id, config)
             if bgm_path:
-                logger.info(f"BGM: {bgm_info['bgm_id']} (mood={bgm_info['mood']}, reason={bgm_info['reason']})")
+                _bgm_id = bgm_info.get("bgm_id") or bgm_info.get("id", "?")
+                logger.info(f"BGM: {_bgm_id} (mood={bgm_info.get('mood', '?')}, reason={bgm_info.get('reason', '?')})")
                 bgm_clip = AudioFileClip(str(bgm_path))
                 if bgm_clip.duration < total_duration:
                     from moviepy import concatenate_audioclips
