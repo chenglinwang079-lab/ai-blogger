@@ -49,3 +49,27 @@ cache_hours = 24
 orientation = "portrait"
 min_width = 720
 min_height = 1280
+
+[export.douyin]
+title_max = 55
+desc_max = 1000
+tag_format = "hashtag"       # "hashtag" → "#话题" 空格分隔
+tag_max = 10
+thumb_width = 1080
+thumb_height = 1920
+
+[export.kuaishou]
+title_max = 30
+desc_max = 500
+tag_format = "hashtag"
+tag_max = 8
+thumb_width = 1080
+thumb_height = 1920
+
+[export.bilibili]
+title_max = 80
+desc_max = 2000
+tag_format = "comma"         # 逗号分隔
+tag_max = 12
+thumb_width = 1920
+thumb_height = 1080
