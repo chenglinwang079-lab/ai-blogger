@@ -615,6 +615,78 @@ def export_platform_cb(script_id_choice: str, platforms: list[str]):
 # ── 回调：Tab 8 工作流 ─────────────────────────────────────────────────────
 
 
+def wf_load_recommendations():
+    """加载今日推荐（只读缓存）。"""
+    from pipeline.recommend import load_recommendations
+    data = load_recommendations(config)
+    if not data:
+        return [], "今日无推荐。请先在终端运行 `python main.py daily recommend`", []
+
+    recs = data.get("recommendations", [])
+    error = data.get("error")
+
+    if error and not recs:
+        return [], f"⚠️ {error}", []
+
+    if not recs:
+        return [], "今日推荐为空", []
+
+    rows = []
+    for r in recs:
+        score = r.get("score", {})
+        rows.append([
+            r.get("title", ""),
+            f"{score.get('composite', '?')}",
+            r.get("reason", "")[:40],
+            r.get("candidate_id", "")[:8],
+        ])
+
+    status = (
+        f"**今日推荐** ({data.get('generated_at', '?')[:10]})\n"
+        f"分类: {data.get('category', '?')} | "
+        f"候选: {data.get('candidates_fetched', 0)} | "
+        f"模型: {data.get('model', '?')}"
+    )
+    return rows, status, recs
+
+
+def wf_select_recommendation(evt: gr.SelectData, recs_state):
+    """点击推荐行 → 设为选中话题，启用 Step 2。"""
+    row = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
+    recs = recs_state
+    if row >= len(recs):
+        return {}, "选择无效", gr.update()
+
+    rec = recs[row]
+    topic = {
+        "candidate_id": rec["candidate_id"],
+        "title": rec["title"],
+        "source": rec.get("source", "recommend"),
+        "snapshot_text": rec.get("snapshot_text", ""),
+        "snapshot_at": rec.get("snapshot_at", ""),
+        "url": rec.get("url", ""),
+    }
+
+    score = rec.get("score", {})
+    info = (
+        f"**已选**: {topic['title']}\n\n"
+        f"综合分: {score.get('composite', '?')} "
+        f"(v={score.get('virality', '?')} f={score.get('freshness', '?')} "
+        f"a={score.get('audience_fit', '?')})\n\n"
+        f"{rec.get('reason', '')}\n\n"
+        f"{topic.get('snapshot_text', '')[:300]}..."
+    )
+
+    state = {
+        "topics": recs,
+        "selected_topic": topic,
+        "scripts": [],
+        "selected_script_id": None,
+        "quality_passed": False,
+    }
+    return state, info, gr.update(interactive=True)
+
+
 def wf_fetch_cb(category, count):
     """Step 1: 拉取选题。"""
     from pipeline.topic import fetch_topics
@@ -1572,6 +1644,15 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 "scripts": [], "selected_script_id": None, "quality_passed": False,
             })
 
+            # ── 今日推荐 ──
+            gr.Markdown("### 🌟 今日推荐")
+            wf_recs_state = gr.State([])
+            btn_wf_load_recs = gr.Button("加载今日推荐", variant="secondary")
+            wf_recs_df = gr.Dataframe(
+                headers=["标题", "综合分", "理由", "ID"], interactive=False, label="今日推荐 Top 3",
+            )
+            wf_recs_info = gr.Markdown("点击「加载今日推荐」或使用下方手动拉取")
+
             # Step 1: 拉取选题
             gr.Markdown("### ① 拉取选题")
             with gr.Row():
@@ -1610,6 +1691,17 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             wf_export_md = gr.Markdown("")
 
             # ── 事件绑定 ──
+            # 今日推荐
+            btn_wf_load_recs.click(
+                fn=wf_load_recommendations,
+                outputs=[wf_recs_df, wf_recs_info, wf_recs_state],
+            )
+            wf_recs_df.select(
+                fn=wf_select_recommendation,
+                inputs=[wf_recs_state],
+                outputs=[wf_state, wf_topic_info, btn_wf_gen],
+            )
+
             # Step 1
             btn_wf_fetch.click(
                 fn=wf_fetch_cb,
