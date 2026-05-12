@@ -49,3 +49,11 @@ cheat/predictions/
 cheat/scripts/
 cheat/scripts/*/publish.json
 cheat/scripts/*/performance.json
+
+# BGM 素材（大文件不入库）
+assets/bgm/*.mp3
+assets/bgm/*.wav
+assets/bgm/*.ogg
+assets/bgm/*.m4a
+assets/bgm/*.aac
+assets/bgm/bgm_catalog.json

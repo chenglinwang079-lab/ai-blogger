@@ -1,0 +1,38 @@
+[
+  {
+    "id": "tech_calm_01",
+    "path": "tech_calm_01.mp3",
+    "mood": "tech",
+    "energy": "medium",
+    "bpm": 96,
+    "tags": ["AI", "科技", "产品"],
+    "enabled": true
+  },
+  {
+    "id": "tense_dark_01",
+    "path": "tense_dark_01.mp3",
+    "mood": "tense",
+    "energy": "high",
+    "bpm": 140,
+    "tags": ["争议", "危机", "冲突"],
+    "enabled": true
+  },
+  {
+    "id": "warm_story_01",
+    "path": "warm_story_01.mp3",
+    "mood": "warm",
+    "energy": "low",
+    "bpm": 80,
+    "tags": ["故事", "人物", "创业"],
+    "enabled": true
+  },
+  {
+    "id": "upbeat_news_01",
+    "path": "upbeat_news_01.mp3",
+    "mood": "upbeat",
+    "energy": "high",
+    "bpm": 130,
+    "tags": ["快讯", "发布", "突破"],
+    "enabled": true
+  }
+]
