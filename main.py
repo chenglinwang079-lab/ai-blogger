@@ -394,7 +394,7 @@ def main():
 
     args = parser.parse_args()
     config = load_config(args.config)
-    validate_config(config, require_api=(args.command not in ("status", "stock")))
+    validate_config(config, require_api=(args.command not in ("status", "stock", "footage")))
     ensure_directories(config)
 
     args.func(args, config)

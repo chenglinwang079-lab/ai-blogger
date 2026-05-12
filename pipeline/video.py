@@ -203,7 +203,7 @@ def render_video(script_id: str, config: dict) -> str:
     footage_segments = []  # 每段素材使用记录
 
     if render_mode == "footage":
-        from pipeline.footage import index_footage, match_footage
+        from pipeline.footage import index_footage, match_footage_with_reason
         from moviepy import VideoFileClip
 
         footage_dir = Path(config["paths"].get("footage_dir", "assets/footage"))
@@ -215,8 +215,10 @@ def render_video(script_id: str, config: dict) -> str:
         for i, ts in enumerate(timestamps):
             original_kw = keywords[i] if i < len(keywords) else ""
             kw = original_kw if original_kw else "abstract"
-            path = match_footage(kw, idx)
-            if path:
+            result = match_footage_with_reason(kw, idx)
+            if result["path"]:
+                path = result["path"]
+                source = "abstract_fallback" if result["reason"] == "abstract_fallback" else "matched"
                 try:
                     clip = VideoFileClip(path)
                     if not clip.duration or clip.duration <= 0:
@@ -224,27 +226,27 @@ def render_video(script_id: str, config: dict) -> str:
                         clip.close()
                         footage_clips.append(None)
                         footage_segments.append({
-                            "index": i, "keyword": kw, "footage": None,
+                            "index": i, "keyword": original_kw or "", "footage": None,
                             "source": "gradient_fallback",
                         })
                         continue
                     footage_clips.append(clip)
                     footage_hits += 1
                     footage_segments.append({
-                        "index": i, "keyword": kw, "footage": path,
-                        "source": "abstract_fallback" if not original_kw else "matched",
+                        "index": i, "keyword": original_kw or "", "footage": path,
+                        "source": source,
                     })
                 except Exception as e:
                     logger.warning(f"素材加载失败 {path}: {e}")
                     footage_clips.append(None)
                     footage_segments.append({
-                        "index": i, "keyword": kw, "footage": None,
+                        "index": i, "keyword": original_kw or "", "footage": None,
                         "source": "gradient_fallback",
                     })
             else:
                 footage_clips.append(None)
                 footage_segments.append({
-                    "index": i, "keyword": kw, "footage": None,
+                    "index": i, "keyword": original_kw or "", "footage": None,
                     "source": "gradient_fallback",
                 })
 
