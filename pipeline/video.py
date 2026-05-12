@@ -7,64 +7,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from pipeline.image_utils import resolve_font_path, wrap_text
+
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-_FONT_MAP = {
-    "Microsoft YaHei": "C:/Windows/Fonts/msyh.ttc",
-    "SimHei": "C:/Windows/Fonts/simhei.ttf",
-    "SimSun": "C:/Windows/Fonts/simsun.ttc",
-    "FangSong": "C:/Windows/Fonts/simfang.ttf",
-}
-
-
-def _resolve_font_path(config: dict) -> str | None:
-    """从 config 解析字体文件路径。优先 assets/fonts/，其次系统字体。"""
-    fonts_dir = Path(config["paths"].get("fonts_dir", "assets/fonts"))
-    if not fonts_dir.is_absolute():
-        fonts_dir = _PROJECT_ROOT / fonts_dir
-    font_name = config["video"].get("subtitle_font", "Microsoft YaHei")
-
-    # 1. assets/fonts/ 下按名称查找
-    for ext in (".ttf", ".ttc", ".otf"):
-        candidate = fonts_dir / f"{font_name}{ext}"
-        if candidate.exists():
-            return str(candidate)
-
-    # 2. assets/fonts/ 下任意字体
-    if fonts_dir.exists():
-        for f in fonts_dir.iterdir():
-            if f.suffix.lower() in (".ttf", ".ttc", ".otf"):
-                return str(f)
-
-    # 3. 按名称映射系统字体
-    if font_name in _FONT_MAP and Path(_FONT_MAP[font_name]).exists():
-        return _FONT_MAP[font_name]
-
-    # 4. 任意系统中文字体
-    for sys_font in _FONT_MAP.values():
-        if Path(sys_font).exists():
-            return sys_font
-
-    return None
-
-
-def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: ImageDraw.ImageDraw) -> list[str]:
-    """按像素宽度自动换行。"""
-    lines = []
-    current = ""
-    for ch in text:
-        test = current + ch
-        bbox = draw.textbbox((0, 0), test, font=font)
-        if bbox[2] - bbox[0] > max_width and current:
-            lines.append(current)
-            current = ch
-        else:
-            current = test
-    if current:
-        lines.append(current)
-    return lines
 
 
 def _cover_frame(frame: np.ndarray, width: int, height: int) -> Image.Image:
@@ -118,7 +65,7 @@ def _render_frame(
     # 关键词大字居中（限 2 行）
     if keyword:
         margin = 60
-        kw_lines = _wrap_text(keyword, font_large, width - margin * 2, draw)[:2]
+        kw_lines = wrap_text(keyword, font_large, width - margin * 2, draw)[:2]
         line_h = font_size * 2 + 12
         total_h = line_h * len(kw_lines)
         y_start = height // 3 - total_h // 2
@@ -132,7 +79,7 @@ def _render_frame(
     # 字幕底部（自动换行 + 描边）
     if text:
         margin = 60
-        sub_lines = _wrap_text(text, font_sub, width - margin * 2, draw)
+        sub_lines = wrap_text(text, font_sub, width - margin * 2, draw)
         line_h = font_size + 8
         total_h = line_h * len(sub_lines)
         y_start = height * 3 // 4 - total_h // 2
@@ -191,7 +138,7 @@ def render_video(script_id: str, config: dict) -> str:
     # 视频参数
     res = config["video"]["resolution"].split("x")
     width, height = int(res[0]), int(res[1])
-    font_path = _resolve_font_path(config)
+    font_path = resolve_font_path(config)
 
     # 预生成渐变背景（只生成一次，每帧复用）
     bg_image = Image.fromarray(_create_background(width, height))
