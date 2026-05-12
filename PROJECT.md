@@ -487,8 +487,59 @@ min_height = 1280
 ## 后续扩展（不在 MVP）
 
 - ~~素材混剪（Pexels/Pixabay）~~ ✅ Phase H 已完成
+- ~~素材池质量与命中率优化~~ ✅ Phase I 已完成
 - 数字人口播（Wav2Lip/MuseTalk）
 - Gradio WebUI
 - Playwright 自动发布
 - 每日定时生成
 - 步骤并行执行（tts + predict）
+
+## Phase I：素材池质量与命中率优化
+
+修复 source tracking bug、统一别名表、blocklist 禁用机制、统计面板、未命中关键词分析、健康检查。
+
+### CLI 命令
+
+```powershell
+# 素材命中率统计
+D:\voxcpm\venv\Scripts\python.exe main.py footage stats
+D:\voxcpm\venv\Scripts\python.exe main.py footage stats --script-id <id>
+
+# 未命中关键词 Top N
+D:\voxcpm\venv\Scripts\python.exe main.py footage missed --top 10
+
+# 外部素材健康检查
+D:\voxcpm\venv\Scripts\python.exe main.py footage health
+
+# 禁用/启用素材
+D:\voxcpm\venv\Scripts\python.exe main.py footage disable "assets/footage/abstract/xxx.mp4" --reason "太暗"
+D:\voxcpm\venv\Scripts\python.exe main.py footage disabled
+D:\voxcpm\venv\Scripts\python.exe main.py footage enable "assets/footage/abstract/xxx.mp4"
+
+# 统一别名表查看
+D:\voxcpm\venv\Scripts\python.exe main.py footage aliases
+D:\voxcpm\venv\Scripts\python.exe main.py footage aliases --category tech
+```
+
+### 统计口径（固定定义）
+
+- `matched`: 直接关键词命中（非 abstract/ 目录）
+- `abstract_fallback`: 命中 abstract/ 目录素材
+- `gradient_fallback`: 无素材可用，渐变背景兜底
+- 命中率 = matched / segments_total（不含 abstract_fallback）
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `pipeline/keyword_aliases.py` | 统一别名表（ALIASES + SEARCH_QUERIES + CATEGORIES） |
+| `pipeline/footage_stats.py` | 统计 + 未命中关键词分析 |
+| `assets/footage/blocklist.json` | 素材黑名单（.gitignore，不进 git） |
+
+### 关键改动
+
+- `pipeline/video.py`: source tracking 改用 `match_footage_with_reason()`，keyword 保留原始值
+- `pipeline/footage.py`: `index_footage()` 新增 `exclude` 参数，blocklist 函数
+- `pipeline/stock.py`: 新增 `health_check_external()`，import 改用 keyword_aliases
+- `main.py`: `footage` 子命令组（stats/missed/health/disable/enable/disabled/aliases）
+- `app.py`: Tab 7 素材管理面板（统计/未命中/健康检查按钮）
