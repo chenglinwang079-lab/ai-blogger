@@ -277,7 +277,7 @@ def on_topic_select(evt: gr.SelectData, topics_json: str):
 # ── 回调：Tab 2 脚本 ─────────────────────────────────────────────────────
 
 
-def generate_script_cb(title: str, summary: str, url: str, selected_topic_json: str):
+def generate_script_cb(title: str, summary: str, url: str, selected_topic_json: str, style_id: str):
     """生成脚本。"""
     if not title and selected_topic_json:
         try:
@@ -292,7 +292,7 @@ def generate_script_cb(title: str, summary: str, url: str, selected_topic_json: 
         return
 
     yield "⏳ 正在生成脚本...", "", "", ""
-    result, err = safe_call(generate_script, topic, config)
+    result, err = safe_call(generate_script, topic, config, style_id=style_id or None)
     if err:
         yield f"```\n{err}\n```", "", "", ""
         return
@@ -639,19 +639,24 @@ def wf_select_topic(evt: gr.SelectData, state):
 def wf_gen_cb(state):
     """Step 2: 逐个生成候选脚本，yield 进度。"""
     from pipeline.script import generate_script, _SCRIPT_STYLES
+    from pipeline.styles import load_style_catalog
     topic = state.get("selected_topic")
     if not topic:
         yield state, "请先选择话题", gr.update(), ""
         return
 
+    catalog = load_style_catalog()
+    if not catalog:
+        catalog = [{"id": None, "style_hint": s, "name": s.split("：")[0]} for s in _SCRIPT_STYLES]
+
     scripts = []
-    for i in range(3):
-        yield state, f"⏳ 正在生成候选 {i+1}/3...", gr.update(), ""
-        style = _SCRIPT_STYLES[i % len(_SCRIPT_STYLES)]
+    for i, entry in enumerate(catalog):
+        style_name = entry.get("name", f"候选 {i+1}")
+        yield state, f"⏳ 正在生成候选 {i+1}/{len(catalog)}... ({style_name})", gr.update(), ""
         styled_topic = dict(topic)
-        styled_topic["style_hint"] = style
+        styled_topic["style_hint"] = entry.get("style_hint", "")
         try:
-            result = generate_script(styled_topic, config)
+            result = generate_script(styled_topic, config, style_id=entry.get("id"))
             scripts.append(result)
         except Exception:
             err = traceback.format_exc()
@@ -666,13 +671,12 @@ def wf_gen_cb(state):
     state["selected_script_id"] = None
     state["quality_passed"] = False
 
-    from pipeline.script import _SCRIPT_STYLES as styles
     choices = []
     for j, s in enumerate(scripts):
-        style_name = styles[j].split("：")[0] if j < len(styles) else f"候选 {j+1}"
+        style_name = s.get("style_name") or f"候选 {j+1}"
         choices.append(f"候选 {j+1} | {s['script_id']} | {style_name} | {s['title']}")
 
-    status = f"✅ 生成 {len(scripts)}/3 个候选，请选择"
+    status = f"✅ 生成 {len(scripts)}/{len(catalog)} 个候选，请选择"
     yield state, status, gr.update(choices=choices, interactive=True, value=None), ""
 
 
@@ -1364,6 +1368,11 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 topic_title = gr.Textbox(label="选题标题", lines=1)
                 topic_summary = gr.Textbox(label="背景信息（可选）", lines=2)
                 topic_url = gr.Textbox(label="来源链接（可选）", lines=1)
+            from pipeline.styles import load_style_catalog as _load_styles
+            _style_ids = [e["id"] for e in _load_styles()]
+            style_dropdown = gr.Dropdown(
+                choices=_style_ids, label="脚本风格", value=_style_ids[0] if _style_ids else None,
+            )
             btn_gen_script = gr.Button("生成脚本", variant="primary")
             script_status = gr.Markdown()
             script_preview = gr.Markdown(label="脚本预览")
@@ -1379,7 +1388,7 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             )
             btn_gen_script.click(
                 fn=generate_script_cb,
-                inputs=[topic_title, topic_summary, topic_url, selected_topic],
+                inputs=[topic_title, topic_summary, topic_url, selected_topic, style_dropdown],
                 outputs=[script_status, script_preview, script_json, script_id_out],
             )
 
