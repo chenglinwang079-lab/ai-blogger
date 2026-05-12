@@ -232,23 +232,18 @@ def render_video(script_id: str, config: dict) -> str:
         if audio_path.exists():
             audio_clip = AudioFileClip(str(audio_path))
 
-            # BGM 混音
-            bgm_dir = Path(config["paths"].get("bgm_dir", "assets/bgm"))
-            if not bgm_dir.is_absolute():
-                bgm_dir = _PROJECT_ROOT / bgm_dir
+            # BGM 混音（智能匹配）
+            from pipeline.bgm import select_bgm
             bgm_volume = config["video"].get("bgm_volume", 0.15)
-            if bgm_dir.exists():
-                bgm_files = [f for f in bgm_dir.iterdir() if f.suffix.lower() in (".mp3", ".wav", ".ogg")]
-                if bgm_files:
-                    import random
-                    bgm_path = random.choice(bgm_files)
-                    logger.info(f"BGM: {bgm_path.name}")
-                    bgm_clip = AudioFileClip(str(bgm_path))
-                    if bgm_clip.duration < total_duration:
-                        from moviepy import concatenate_audioclips
-                        repeats = int(total_duration / bgm_clip.duration) + 1
-                        bgm_clip = concatenate_audioclips([bgm_clip.subclipped(0, bgm_clip.duration) for _ in range(repeats)])
-                    bgm_clip = bgm_clip.subclipped(0, total_duration).with_volume_scaled(bgm_volume)
+            bgm_path, bgm_info = select_bgm(script_id, config)
+            if bgm_path:
+                logger.info(f"BGM: {bgm_info['bgm_id']} (mood={bgm_info['mood']}, reason={bgm_info['reason']})")
+                bgm_clip = AudioFileClip(str(bgm_path))
+                if bgm_clip.duration < total_duration:
+                    from moviepy import concatenate_audioclips
+                    repeats = int(total_duration / bgm_clip.duration) + 1
+                    bgm_clip = concatenate_audioclips([bgm_clip.subclipped(0, bgm_clip.duration) for _ in range(repeats)])
+                bgm_clip = bgm_clip.subclipped(0, total_duration).with_volume_scaled(bgm_volume)
 
             if bgm_clip is not None:
                 mixed = CompositeAudioClip([audio_clip, bgm_clip])
