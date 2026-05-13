@@ -104,7 +104,7 @@ def _run_async_safely(coro):
     thread.join()
 
     if "error" in error:
-        raise error["error"]
+        raise error["error"] from error["error"]
     return result["value"]
 
 
@@ -194,6 +194,16 @@ def _run_voxcpm2_subprocess(
     if proc.returncode != 0:
         stderr = proc.stderr.strip()[-200:] if proc.stderr else ""
         logger.warning(f"VoxCPM2 子进程退出码 {proc.returncode}: {stderr}")
+        # 尝试读取 result.json 获取更具体的 fallback_reason
+        result_path = worker_dir / "result.json"
+        if result_path.exists():
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+                reason = result.get("fallback_reason", "voxcpm_subprocess_crashed")
+                logger.warning(f"VoxCPM2 worker 报告具体原因: {reason}")
+                return [], [], reason
+            except (json.JSONDecodeError, OSError):
+                pass
         return [], [], "voxcpm_subprocess_crashed"
 
     result_path = worker_dir / "result.json"
@@ -255,52 +265,54 @@ def _generate_hybrid(
     fallback_reason: str | None = None
     voxcpm_worker_dir: Path | None = None
 
-    if backend_cfg == "voxcpm2":
-        # ── 子进程隔离 VoxCPM2 ──
-        durations, backends, fallback_reason = _run_voxcpm2_subprocess(segments, config, script_id)
-        if fallback_reason is None:
-            # 成功：从 worker 目录复制 WAV 到 temp_dir
+    try:
+        if backend_cfg == "voxcpm2":
+            # ── 子进程隔离 VoxCPM2 ──
             voxcpm_worker_dir = Path(config["paths"]["output_dir"]) / script_id / "_tts_voxcpm2"
-            for i in range(len(segments)):
-                src = voxcpm_worker_dir / f"seg_{i:03d}.wav"
-                dst = temp_dir / f"seg_{i:03d}.wav"
-                shutil.copy2(str(src), str(dst))
+            durations, backends, fallback_reason = _run_voxcpm2_subprocess(segments, config, script_id)
+            if fallback_reason is None:
+                # 成功：从 worker 目录复制 WAV 到 temp_dir
+                for i in range(len(segments)):
+                    src = voxcpm_worker_dir / f"seg_{i:03d}.wav"
+                    dst = temp_dir / f"seg_{i:03d}.wav"
+                    shutil.copy2(str(src), str(dst))
+            else:
+                logger.warning(f"VoxCPM2 子进程失败 ({fallback_reason})，整批 fallback 到 edge-tts")
         else:
-            logger.warning(f"VoxCPM2 子进程失败 ({fallback_reason})，整批 fallback 到 edge-tts")
-    else:
-        fallback_reason = "config_edge_tts"
+            fallback_reason = "config_edge_tts"
 
-    # ── edge-tts fallback（整批或配置指定）──
-    if fallback_reason is not None:
-        durations = []
-        backends = []
-        for i, text in enumerate(segments):
-            seg_path = temp_dir / f"seg_{i:03d}.wav"
-            try:
-                wav, dur = _generate_segment_edge_tts(text, sr)
-            except Exception as e:
-                logger.error(f"段 {i} edge-tts 也失败: {e}")
-                raise
-            sf.write(str(seg_path), wav, sr)
-            del wav
-            durations.append(dur)
-            backends.append("edge-tts")
+        # ── edge-tts fallback（整批或配置指定）──
+        if fallback_reason is not None:
+            durations = []
+            backends = []
+            for i, text in enumerate(segments):
+                seg_path = temp_dir / f"seg_{i:03d}.wav"
+                try:
+                    wav, dur = _generate_segment_edge_tts(text, sr)
+                except Exception as e:
+                    logger.error(f"段 {i} edge-tts 也失败: {e}")
+                    raise
+                sf.write(str(seg_path), wav, sr)
+                del wav
+                durations.append(dur)
+                backends.append("edge-tts")
 
-    # 校验
-    if len(durations) != len(segments) or len(backends) != len(segments):
-        raise ValueError(
-            f"TTS durations/backends length mismatch: "
-            f"{len(durations)}/{len(backends)} vs {len(segments)} segments"
-        )
+        # 校验
+        if len(durations) != len(segments) or len(backends) != len(segments):
+            raise ValueError(
+                f"TTS durations/backends length mismatch: "
+                f"{len(durations)}/{len(backends)} vs {len(segments)} segments"
+            )
 
-    # 从磁盘拼接（流式）
-    audio_path = output_dir / "audio.wav"
-    _concatenate_segments(temp_dir, len(segments), sr, audio_path)
+        # 从磁盘拼接（流式）
+        audio_path = output_dir / "audio.wav"
+        _concatenate_segments(temp_dir, len(segments), sr, audio_path)
 
-    # 清理临时文件
-    shutil.rmtree(temp_dir, ignore_errors=True)
-    if voxcpm_worker_dir is not None:
-        shutil.rmtree(voxcpm_worker_dir, ignore_errors=True)
+    finally:
+        # 清理临时文件（无论成功或失败）
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        if voxcpm_worker_dir is not None:
+            shutil.rmtree(voxcpm_worker_dir, ignore_errors=True)
 
     return str(audio_path), durations, backends, fallback_reason
 
