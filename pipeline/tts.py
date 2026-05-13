@@ -1,9 +1,11 @@
-"""TTS：VoxCPM2（每段独立，失败段自动降级 edge-tts）"""
+"""TTS：VoxCPM2 子进程隔离 + edge-tts fallback"""
 
 import asyncio
 import json
 import logging
 import shutil
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -149,14 +151,83 @@ def _concatenate_segments(temp_dir: Path, n: int, sr: int, output_path: Path) ->
             out.write(data)
 
 
+def _run_voxcpm2_subprocess(
+    segments: list[str], config: dict, script_id: str
+) -> tuple[list[float], list[str], str | None]:
+    """在子进程中运行 VoxCPM2，隔离 native crash。
+
+    Returns:
+        (durations, backends, fallback_reason)
+        fallback_reason 非 None 表示失败，调用方应 fallback 到 edge-tts。
+    """
+    output_dir = Path(config["paths"]["output_dir"]) / script_id
+    worker_dir = output_dir / "_tts_voxcpm2"
+    shutil.rmtree(worker_dir, ignore_errors=True)
+    worker_dir.mkdir(parents=True, exist_ok=True)
+
+    input_data = {
+        "segments": segments,
+        "sample_rate": config["tts"]["sample_rate"],
+        "model_path": config["paths"]["voxcpm_model"],
+        "optimize": config["tts"].get("voxcpm_optimize", True),
+        "output_dir": str(worker_dir),
+    }
+    input_path = worker_dir / "input.json"
+    input_path.write_text(json.dumps(input_data, ensure_ascii=False), encoding="utf-8")
+
+    timeout = config["tts"].get("voxcpm_timeout_seconds", 180)
+    worker_script = Path(__file__).resolve().parent.parent / "scripts" / "voxcpm_worker.py"
+
+    logger.info(f"启动 VoxCPM2 子进程: {len(segments)} 段, timeout={timeout}s")
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(worker_script), str(input_path)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(f"VoxCPM2 子进程超时 ({timeout}s)")
+        return [], [], "voxcpm_subprocess_timeout"
+
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip()[-200:] if proc.stderr else ""
+        logger.warning(f"VoxCPM2 子进程退出码 {proc.returncode}: {stderr}")
+        return [], [], "voxcpm_subprocess_crashed"
+
+    result_path = worker_dir / "result.json"
+    if not result_path.exists():
+        logger.warning("VoxCPM2 子进程未生成 result.json")
+        return [], [], "voxcpm_missing_output"
+
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    if not result.get("ok"):
+        logger.warning(f"VoxCPM2 worker 失败: {result.get('error')}")
+        return [], [], result.get("fallback_reason", "voxcpm_worker_error")
+
+    durations = result["durations"]
+    backends = result["backends"]
+
+    # 校验 WAV 文件完整性
+    for i in range(len(segments)):
+        wav_path = worker_dir / f"seg_{i:03d}.wav"
+        if not wav_path.exists():
+            logger.warning(f"VoxCPM2 输出缺失: {wav_path.name}")
+            return [], [], "voxcpm_missing_output"
+
+    logger.info(f"VoxCPM2 子进程成功: {len(segments)} 段, 总时长 {sum(durations):.1f}s")
+    return durations, backends, None
+
+
 def _generate_hybrid(
     segments: list[str], config: dict, script_id: str
 ) -> tuple[str, list[float], list[str], str | None]:
-    """混合 TTS：每段独立，失败段自动降级 edge-tts。
+    """混合 TTS：VoxCPM2 子进程优先，失败整批 fallback edge-tts。
 
     Returns:
         (audio_path, durations, backends, fallback_reason)
-        - fallback_reason: None | "oom" | "voxcpm2_error"
+        - fallback_reason: None | "config_edge_tts" | "voxcpm_subprocess_*" | ...
     """
     if not segments:
         raise ValueError("No text segments to generate audio")
@@ -179,60 +250,57 @@ def _generate_hybrid(
         logger.warning(f"未知 TTS backend={backend_cfg}，回退 edge-tts")
         backend_cfg = "edge-tts"
 
-    model = None
-    voxcpm_failed = backend_cfg == "edge-tts"
-    fallback_reason = "config_edge_tts" if voxcpm_failed else None
-    durations = []
-    backends = []
+    durations: list[float] = []
+    backends: list[str] = []
+    fallback_reason: str | None = None
+    voxcpm_worker_dir: Path | None = None
 
-    try:
+    if backend_cfg == "voxcpm2":
+        # ── 子进程隔离 VoxCPM2 ──
+        durations, backends, fallback_reason = _run_voxcpm2_subprocess(segments, config, script_id)
+        if fallback_reason is None:
+            # 成功：从 worker 目录复制 WAV 到 temp_dir
+            voxcpm_worker_dir = Path(config["paths"]["output_dir"]) / script_id / "_tts_voxcpm2"
+            for i in range(len(segments)):
+                src = voxcpm_worker_dir / f"seg_{i:03d}.wav"
+                dst = temp_dir / f"seg_{i:03d}.wav"
+                shutil.copy2(str(src), str(dst))
+        else:
+            logger.warning(f"VoxCPM2 子进程失败 ({fallback_reason})，整批 fallback 到 edge-tts")
+    else:
+        fallback_reason = "config_edge_tts"
+
+    # ── edge-tts fallback（整批或配置指定）──
+    if fallback_reason is not None:
+        durations = []
+        backends = []
         for i, text in enumerate(segments):
             seg_path = temp_dir / f"seg_{i:03d}.wav"
-
-            if not voxcpm_failed:
-                try:
-                    if model is None:
-                        optimize = config["tts"].get("voxcpm_optimize", True)
-                        model = _get_voxcpm_model(config["paths"]["voxcpm_model"], optimize=optimize)
-                    wav, dur = _generate_segment_voxcpm2(text, model, sr)
-                    sf.write(str(seg_path), wav, sr)
-                    del wav
-                    durations.append(dur)
-                    backends.append("voxcpm2")
-                    continue
-                except Exception as e:
-                    reason = "oom" if _is_oom_error(e) else "voxcpm2_error"
-                    logger.warning(f"段 {i} VoxCPM2 失败 ({reason}: {e})，切换到 edge-tts")
-                    fallback_reason = reason
-                    voxcpm_failed = True
-                    clear_voxcpm_cache()
-                    model = None
-
-            # edge-tts fallback（单段）
             try:
                 wav, dur = _generate_segment_edge_tts(text, sr)
             except Exception as e:
-                logger.error(f"段 {i} edge-tts fallback 也失败: {e}")
+                logger.error(f"段 {i} edge-tts 也失败: {e}")
                 raise
             sf.write(str(seg_path), wav, sr)
             del wav
             durations.append(dur)
             backends.append("edge-tts")
 
-        # 校验
-        if len(durations) != len(segments) or len(backends) != len(segments):
-            raise ValueError(
-                f"TTS durations/backends length mismatch: "
-                f"{len(durations)}/{len(backends)} vs {len(segments)} segments"
-            )
+    # 校验
+    if len(durations) != len(segments) or len(backends) != len(segments):
+        raise ValueError(
+            f"TTS durations/backends length mismatch: "
+            f"{len(durations)}/{len(backends)} vs {len(segments)} segments"
+        )
 
-        # 从磁盘拼接（流式）
-        audio_path = output_dir / "audio.wav"
-        _concatenate_segments(temp_dir, len(segments), sr, audio_path)
+    # 从磁盘拼接（流式）
+    audio_path = output_dir / "audio.wav"
+    _concatenate_segments(temp_dir, len(segments), sr, audio_path)
 
-    finally:
-        # 清理临时文件（无论成功与否）
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    # 清理临时文件
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    if voxcpm_worker_dir is not None:
+        shutil.rmtree(voxcpm_worker_dir, ignore_errors=True)
 
     return str(audio_path), durations, backends, fallback_reason
 
