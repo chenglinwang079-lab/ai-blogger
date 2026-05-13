@@ -12,18 +12,37 @@ def parse_llm_json(response: str, required_keys: list[str]) -> dict:
     """解析 LLM 返回的 JSON，校验必填字段。
 
     解析失败或缺少字段时抛出 ValueError。
+    防御性处理：code fence 剥离、混合内容提取。
     """
+    import re
+    text = response.strip()
+
+    # 剥离 markdown code fence（兼容 Windows 换行）
+    if text.startswith("```"):
+        text = re.sub(r"^```\w*\s*", "", text)
+        text = re.sub(r"\s*```\s*$", "", text)
+        text = text.strip()
+
+    # 尝试直接解析
     try:
-        result = json.loads(response)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"LLM 返回非法 JSON: {e}") from e
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        # 从混合内容中提取第一个 JSON 对象（贪婪匹配）
+        match = re.search(r"\{[\s\S]*\}", text)
+        if match:
+            try:
+                result = json.loads(match.group())
+            except json.JSONDecodeError as e:
+                raise ValueError(f"LLM 返回非法 JSON: {e}") from e
+        else:
+            raise ValueError(f"LLM 返回非法 JSON: 无 JSON 对象")
 
     if not isinstance(result, dict):
         raise ValueError(f"LLM 返回非 dict 类型: {type(result).__name__}")
 
     missing = [k for k in required_keys if k not in result]
     if missing:
-        raise ValueError(f"LLM 返回缺少字段: {missing}")
+        raise ValueError(f"LLM 返回缺少字段: {missing}，实际字段: {list(result.keys())}")
 
     return result
 
