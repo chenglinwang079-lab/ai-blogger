@@ -16,12 +16,15 @@ logger = logging.getLogger(__name__)
 _voxcpm_cache: dict[str, object] = {}
 
 
-def _get_voxcpm_model(model_path: str):
+def _get_voxcpm_model(model_path: str, optimize: bool = True):
     """获取缓存的 VoxCPM2 模型，不存在则加载。"""
-    if model_path not in _voxcpm_cache:
+    cache_key = f"{model_path}|opt={optimize}"
+    if cache_key not in _voxcpm_cache:
         from voxcpm import VoxCPM
-        _voxcpm_cache[model_path] = VoxCPM.from_pretrained(model_path, load_denoiser=False)
-    return _voxcpm_cache[model_path]
+        _voxcpm_cache[cache_key] = VoxCPM.from_pretrained(
+            model_path, load_denoiser=False, optimize=optimize,
+        )
+    return _voxcpm_cache[cache_key]
 
 
 def clear_voxcpm_cache() -> None:
@@ -167,9 +170,18 @@ def _generate_hybrid(
     shutil.rmtree(temp_dir, ignore_errors=True)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
+    # 读取 backend 配置，必须在任何 VoxCPM2 import/load 之前
+    backend_cfg = config["tts"].get("backend", "voxcpm2").lower()
+    if backend_cfg in ("edge-tts", "edge", "edge_tts"):
+        logger.info("TTS backend=edge-tts，跳过 VoxCPM2，直接使用 edge-tts")
+        backend_cfg = "edge-tts"
+    elif backend_cfg not in ("voxcpm2", "hybrid"):
+        logger.warning(f"未知 TTS backend={backend_cfg}，回退 edge-tts")
+        backend_cfg = "edge-tts"
+
     model = None
-    voxcpm_failed = False
-    fallback_reason = None
+    voxcpm_failed = backend_cfg == "edge-tts"
+    fallback_reason = "config_edge_tts" if voxcpm_failed else None
     durations = []
     backends = []
 
@@ -180,7 +192,8 @@ def _generate_hybrid(
             if not voxcpm_failed:
                 try:
                     if model is None:
-                        model = _get_voxcpm_model(config["paths"]["voxcpm_model"])
+                        optimize = config["tts"].get("voxcpm_optimize", True)
+                        model = _get_voxcpm_model(config["paths"]["voxcpm_model"], optimize=optimize)
                     wav, dur = _generate_segment_voxcpm2(text, model, sr)
                     sf.write(str(seg_path), wav, sr)
                     del wav
