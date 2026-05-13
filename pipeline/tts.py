@@ -259,6 +259,9 @@ def _generate_hybrid(
     elif backend_cfg not in ("voxcpm2", "hybrid"):
         logger.warning(f"未知 TTS backend={backend_cfg}，回退 edge-tts")
         backend_cfg = "edge-tts"
+    else:
+        # hybrid 等价于 voxcpm2（子进程优先 + fallback edge-tts）
+        backend_cfg = "voxcpm2"
 
     durations: list[float] = []
     backends: list[str] = []

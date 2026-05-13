@@ -11,7 +11,7 @@
 1. **磁盘持久化**：所有中间产物写磁盘，不依赖进程内存。step 和 run 共享同一套 IO 逻辑。
 2. **checkpoint/resume**：每步完成后记录 progress，失败后可从断点恢复，不浪费 LLM 调用。
 3. **cheat-on-content 协议对齐**：adapter 层对齐 candidate-schema、prediction template、state-management 协议。
-4. **降级兜底**：LLM 调用有重试，VoxCPM2 OOM 回退 edge-tts，API 失败不阻塞手动输入。
+4. **降级兜底**：LLM 调用有重试，VoxCPM2 子进程失败/超时/崩溃 fallback edge-tts，API 失败不阻塞手动输入。
 
 ## 已确认资产
 
@@ -165,10 +165,16 @@ retry_delay_seconds = 5            # 初始重试间隔（指数退避）
 timeout_seconds = 60
 
 [tts]
-backend = "voxcpm2"
-fallback = "edge-tts"
-max_segment_chars = 100            # 单段超长自动拆分阈值
-sample_rate = 48000                # 统一输出采样率
+# 生产默认 edge-tts（稳定，无需 GPU）
+# VoxCPM2 仅在手动改为 voxcpm2 或 hybrid 时启用
+backend = "edge-tts"                 # "edge-tts" | "voxcpm2" | "hybrid"
+                                     # edge-tts: 稳定，无需 GPU
+                                     # voxcpm2/hybrid: 子进程隔离，失败自动 fallback edge-tts
+max_segment_chars = 100              # 单段超长自动拆分阈值
+sample_rate = 48000                  # 统一输出采样率
+voxcpm_optimize = false              # VoxCPM2 内存优化（voxcpm2/hybrid 专用）
+voxcpm_subprocess = true             # 预留/推荐配置；当前 voxcpm2 模式固定使用子进程隔离
+voxcpm_timeout_seconds = 180         # 子进程超时秒数
 
 [video]
 resolution = "1080x1920"
@@ -265,10 +271,10 @@ def retro(script_id: str, actual: dict) -> dict:
 ### pipeline/tts.py
 ```python
 def generate_audio(script_id: str, config: dict) -> dict:
-    """VoxCPM2 逐段生成
+    """默认 edge-tts；手动启用 VoxCPM2/hybrid 时走子进程隔离
     - 读取 cheat/scripts/<script_id>/final.md
     - 单段超 max_segment_chars → 自动拆分
-    - OOM 降级：VoxCPM2 → edge-tts（mp3→wav 转码 + 统一 sample_rate）
+    - VoxCPM2 子进程失败/超时/崩溃 fallback edge-tts
     - 输出 dist/<script_id>/audio.wav + timestamps.json
     """
 ```
@@ -394,7 +400,7 @@ edge-tts 输出 mp3，tts.py 负责转码为 WAV 并统一 sample_rate（48kHz�
 
 ## VRAM 管理
 
-- VoxCPM2 单独加载，逐段生成后 `torch.cuda.empty_cache()`
+- VoxCPM2 子进程隔离加载，生成后自动释放；失败自动 fallback edge-tts
 - 视频渲染纯 CPU（MoviePy + ffmpeg）
 - 不与其他 GPU 模型同时运行
 
@@ -442,9 +448,9 @@ edge-tts 输出 mp3，tts.py 负责转码为 WAV 并统一 sample_rate（48kHz�
 ### Phase 2: 内容资产生成层
 
 - [ ] **Step 5: TTS — pipeline/tts.py**
-  - 读取 final.md，逐段 VoxCPM2 生成
+  - 读取 final.md，默认 edge-tts 生成
   - 单段超长自动拆分
-  - OOM 降级 → edge-tts（mp3→wav 转码 + 48kHz 统一）
+  - 手动启用 VoxCPM2/hybrid 时走子进程隔离，失败自动 fallback edge-tts
   - 输出 dist/<script_id>/audio.wav + timestamps.json
 
 - [ ] **Step 6: 渲染 — pipeline/video.py**

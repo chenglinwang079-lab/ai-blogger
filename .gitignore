@@ -21,6 +21,10 @@ Thumbs.db
 config.toml
 .env
 
+# 本地启动脚本（可能含明文 key，用 .env + python app.py 代替）
+run_webui.py
+start_webui.bat
+
 # Footage 素材（大文件不入库）
 assets/footage/**/*.mp4
 assets/footage/**/*.mov

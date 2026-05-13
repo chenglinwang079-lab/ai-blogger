@@ -28,10 +28,16 @@ retry_delay_seconds = 5
 timeout_seconds = 60
 
 [tts]
-backend = "voxcpm2"
-fallback = "edge-tts"
+# 生产默认 edge-tts（稳定，无需 GPU）
+# VoxCPM2 仅在手动改为 voxcpm2 或 hybrid 时启用
+backend = "edge-tts"          # "edge-tts" | "voxcpm2" | "hybrid"
+                              # edge-tts: 稳定，无需 GPU
+                              # voxcpm2/hybrid: 子进程隔离，失败自动 fallback edge-tts
 max_segment_chars = 100
 sample_rate = 48000
+voxcpm_optimize = false       # VoxCPM2 内存优化（voxcpm2/hybrid 专用）
+voxcpm_subprocess = true      # 预留/推荐配置；当前 voxcpm2 模式固定使用子进程隔离
+voxcpm_timeout_seconds = 180  # 子进程超时秒数
 
 [video]
 resolution = "1080x1920"
