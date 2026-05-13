@@ -27,13 +27,23 @@ PROJECT_ROOT = Path(__file__).parent
 def load_config(config_path: Path | None = None) -> dict:
     """加载 config.toml，返回配置字典。
 
-    api.openai_api_key 为空时自动从环境变量 MIMO_API_KEY 读取。
+    api.openai_api_key 为空时自动从 .env 文件或环境变量 MIMO_API_KEY 读取。
     """
     import os
     path = config_path or (PROJECT_ROOT / "config.toml")
     if not path.exists():
         logger.error(f"配置文件不存在: {path}")
         sys.exit(1)
+
+    # 优先从 .env 文件加载环境变量（不覆盖已有的）
+    env_path = path.parent / ".env"
+    if env_path.exists():
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(env_path, override=False)
+        except ImportError:
+            pass  # python-dotenv 未安装时跳过
+
     with open(path, "rb") as f:
         config = tomllib.load(f)
 

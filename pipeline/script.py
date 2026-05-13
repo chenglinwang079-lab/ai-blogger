@@ -12,22 +12,27 @@ def make_script_id(title: str, script_text: str) -> str:
     return hashlib.sha256(f"{title}{script_text}".encode()).hexdigest()[:12]
 
 
-SCRIPT_SYSTEM_PROMPT = """你是一位 AI 领域的短视频博主，风格口语化、有节奏感、信息密度高。
+_DEFAULT_PERSONA = "你是一位 AI 领域的短视频博主，风格口语化、有节奏感、信息密度高。"
 
+_SCRIPT_REQUIREMENTS = """
 要求：
 - 总时长 60-90 秒
 - 分 4-6 段，每段 10-15 秒
 - 开头 3 秒必须有钩子（反问/悬念/冲击性事实）
 - 用词口语化，避免书面语
 - 每段标注 visual_keyword（画面关键词）和 duration_est（预估秒数）
+"""
 
-输出格式（严格 JSON）：
+_JSON_FORMAT_INSTRUCTION = """
+输出格式（严格 JSON，不要输出任何其他内容）：
 {
   "title": "视频标题",
   "segments": [
     {"text": "口播内容", "visual_keyword": "关键词", "duration_est": 12}
   ]
 }"""
+
+SCRIPT_SYSTEM_PROMPT = _DEFAULT_PERSONA + _SCRIPT_REQUIREMENTS + _JSON_FORMAT_INSTRUCTION
 
 _SCRIPT_STYLES = [
     "强钩子观点型：开头直接抛出反直觉观点，用情绪化语言抓注意力",
@@ -60,7 +65,8 @@ def generate_script(topic: dict, config: dict, *, style_id: str | None = None) -
         style_entry = resolve_style(topic["style_id"])
         # topic 残留无效 style_id → 静默 fallback
 
-    system_content = (style_entry.get("system_prompt_override") if style_entry else None) or SCRIPT_SYSTEM_PROMPT
+    persona = (style_entry.get("system_prompt_override") if style_entry else None) or _DEFAULT_PERSONA
+    system_content = persona + _SCRIPT_REQUIREMENTS + _JSON_FORMAT_INSTRUCTION
     style_hint = (style_entry["style_hint"] if style_entry else None) or topic.get("style_hint", "")
 
     user_prompt = f"""请根据以下选题生成短视频口播脚本：
@@ -90,8 +96,24 @@ def generate_script(topic: dict, config: dict, *, style_id: str | None = None) -
     )
 
     result = parse_llm_json(response, ["title", "segments"])
-    title = result["title"]
+    title = str(result.get("title") or "").strip()
+    if not title:
+        title = topic.get("title", "未命名脚本")
     segments = result["segments"]
+
+    if not isinstance(segments, list) or not segments:
+        raise ValueError(f"segments 必须是非空列表，实际: {type(segments).__name__}({len(segments) if isinstance(segments, list) else ''})")
+
+    for seg in segments:
+        if not isinstance(seg, dict):
+            raise ValueError(f"segment 必须是 dict，实际: {type(seg).__name__}")
+        if not seg.get("text"):
+            raise ValueError(f"segment 缺少 text 字段: {seg}")
+        seg["visual_keyword"] = seg.get("visual_keyword") or ""
+        try:
+            seg["duration_est"] = float(seg.get("duration_est", 12))
+        except (TypeError, ValueError):
+            seg["duration_est"] = 12
 
     # 生成 script_text（纯文本版，供打分用）
     script_text = "\n\n".join(seg["text"] for seg in segments)
