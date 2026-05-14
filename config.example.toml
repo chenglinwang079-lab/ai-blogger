@@ -45,6 +45,9 @@ bgm_volume = 0.15
 subtitle_font = "Microsoft YaHei"
 subtitle_fontsize = 42
 render_mode = "gradient"   # "gradient" | "footage"
+background_style = "tech_grid"  # "tech_grid" | "dot_matrix" | "gradient"
+keyword_highlight = true        # 字幕中高亮 visual_keyword（best-effort）
+subtitle_shadow = true          # 字幕文字阴影
 
 [stock]
 # 未来自动补素材开关；手动 CLI/WebUI 始终可执行

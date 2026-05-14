@@ -32,6 +32,8 @@ def aggregate_stats(reports: list[dict]) -> dict:
     matched = 0
     abstract_fallback = 0
     gradient_fallback = 0
+    quality_scores: list[float] = []
+    missed_counter: Counter[str] = Counter()
 
     for item in reports:
         r = item["report"]
@@ -39,8 +41,20 @@ def aggregate_stats(reports: list[dict]) -> dict:
         matched += r.get("matched", 0)
         abstract_fallback += r.get("abstract_fallback", 0)
         gradient_fallback += r.get("gradient_fallback", 0)
+        # quality score（兼容旧 report 无 quality 字段）
+        q = r.get("quality")
+        if q and "score" in q:
+            quality_scores.append(q["score"])
+        # 从 segments 统计 gradient_fallback 关键词频次
+        for seg in r.get("segments", []):
+            if seg.get("source") in ("gradient_fallback", "gradient"):
+                kw = (seg.get("keyword") or seg.get("visual_keyword") or "").strip()
+                if kw:
+                    missed_counter[kw] += 1
 
     match_rate = matched / segments_total if segments_total > 0 else 0.0
+    avg_score = round(sum(quality_scores) / len(quality_scores), 1) if quality_scores else None
+    top_missed = [{"keyword": kw, "count": cnt} for kw, cnt in missed_counter.most_common(10)]
     return {
         "scripts_total": scripts_total,
         "segments_total": segments_total,
@@ -48,6 +62,8 @@ def aggregate_stats(reports: list[dict]) -> dict:
         "abstract_fallback": abstract_fallback,
         "gradient_fallback": gradient_fallback,
         "match_rate": match_rate,
+        "quality_score_avg": avg_score,
+        "top_missed_keywords": top_missed,
     }
 
 
@@ -85,6 +101,8 @@ def format_stats_markdown(agg: dict, per_script: list[dict]) -> str:
         f"| 渐变兜底 | {agg['gradient_fallback']} |",
         f"| **命中率** | **{agg['match_rate']:.1%}** |",
     ]
+    if agg.get("quality_score_avg") is not None:
+        lines.append(f"| **平均质量分** | **{agg['quality_score_avg']}** |")
 
     if per_script:
         lines += [

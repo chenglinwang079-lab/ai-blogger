@@ -27,7 +27,7 @@ def _cover_frame(frame: np.ndarray, width: int, height: int) -> Image.Image:
     img = img.resize(new_size, Image.LANCZOS)
     left = (img.width - width) // 2
     top = (img.height - height) // 2
-    return img.crop((left, top, left + width, top + height))
+    return img.crop((left, top, left + width, top + height)).convert("RGBA")
 
 
 def _create_background(width: int, height: int) -> np.ndarray:
@@ -42,6 +42,87 @@ def _create_background(width: int, height: int) -> np.ndarray:
     return img
 
 
+def _compute_quality_score(matched: int, abstract_fb: int, total: int) -> float:
+    """渲染质量评分（0-100）。matched=100分, abstract_fallback=40分, gradient=0分。"""
+    if total <= 0:
+        return 0.0
+    return round((matched * 100 + abstract_fb * 40) / total, 1)
+
+
+def _create_enhanced_background(
+    width: int,
+    height: int,
+    *,
+    style: str = "tech_grid",
+    tint: tuple[int, int, int] = (100, 180, 255),
+) -> Image.Image:
+    """增强渐变背景（RGBA）。支持 tech_grid / dot_matrix / gradient 三种样式。"""
+    if style == "gradient":
+        return Image.fromarray(_create_background(width, height)).convert("RGBA")
+
+    # 1. 基底渐变
+    base = Image.fromarray(_create_background(width, height)).convert("RGBA")
+
+    # 2. 网格/圆点层
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    grid_color = (*tint, 18)
+    if style == "dot_matrix":
+        spacing = 60
+        for y in range(0, height, spacing):
+            for x in range(0, width, spacing):
+                draw.ellipse((x - 2, y - 2, x + 2, y + 2), fill=grid_color)
+    else:
+        # tech_grid（含未知 style fallback）
+        spacing = 80
+        for x in range(0, width, spacing):
+            draw.line((x, 0, x, height), fill=grid_color, width=1)
+        for y in range(0, height, spacing):
+            draw.line((0, y, width, y), fill=grid_color, width=1)
+    base = Image.alpha_composite(base, overlay)
+
+    # 3. 噪点层
+    rng = np.random.default_rng(42)
+    noise_arr = rng.integers(0, 255, (height, width), dtype=np.uint8)
+    noise_rgba = np.zeros((height, width, 4), dtype=np.uint8)
+    noise_rgba[:, :, 0] = noise_arr
+    noise_rgba[:, :, 1] = noise_arr
+    noise_rgba[:, :, 2] = noise_arr
+    noise_rgba[:, :, 3] = 6
+    noise_layer = Image.fromarray(noise_rgba, "RGBA")
+    base = Image.alpha_composite(base, noise_layer)
+
+    # 4. vignette 暗角（numpy 向量化）
+    ys = np.arange(height).reshape(-1, 1)
+    xs = np.arange(width).reshape(1, -1)
+    cy, cx = height / 2, width / 2
+    max_dist = (cx ** 2 + cy ** 2) ** 0.5
+    dist = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2)
+    alpha = np.clip(28 * (dist / max_dist), 0, 28).astype(np.uint8)
+    vignette = np.zeros((height, width, 4), dtype=np.uint8)
+    vignette[:, :, 3] = alpha
+    vignette_layer = Image.fromarray(vignette, "RGBA")
+    base = Image.alpha_composite(base, vignette_layer)
+
+    return base
+
+
+def _highlight_keyword_segments(text: str, keyword: str) -> list[tuple[str, bool]]:
+    """将 text 按 keyword（大小写不敏感）拆分为 [(seg, is_keyword), ...]。"""
+    if not keyword:
+        return [(text, False)]
+    lower_text = text.lower()
+    lower_kw = keyword.lower()
+    idx = lower_text.find(lower_kw)
+    if idx == -1:
+        return [(text, False)]
+    return [
+        (text[:idx], False),
+        (text[idx : idx + len(keyword)], True),
+        (text[idx + len(keyword) :], False),
+    ]
+
+
 def _render_frame(
     width: int,
     height: int,
@@ -50,10 +131,16 @@ def _render_frame(
     font_path: str | None,
     font_size: int = 42,
     bg_image: Image.Image | None = None,
+    *,
+    keyword_highlight: bool = True,
+    subtitle_shadow: bool = True,
+    accent_color: tuple[int, int, int] = (100, 180, 255),
 ) -> np.ndarray:
-    """渲染单帧：渐变背景 + 关键词大字 + 字幕。"""
-    img = bg_image.copy() if bg_image is not None else Image.fromarray(_create_background(width, height))
-    draw = ImageDraw.Draw(img)
+    """渲染单帧：增强背景 + 关键词大字（底条）+ 字幕（阴影 + 高亮）。返回 RGB numpy。"""
+    if bg_image is not None:
+        img = bg_image.copy().convert("RGBA")
+    else:
+        img = Image.fromarray(_create_background(width, height)).convert("RGBA")
 
     try:
         font_large = ImageFont.truetype(font_path, font_size * 2) if font_path else ImageFont.load_default()
@@ -62,35 +149,78 @@ def _render_frame(
         font_large = ImageFont.load_default()
         font_sub = ImageFont.load_default()
 
-    # 关键词大字居中（限 2 行）
+    # ── 关键词大字居中 + 半透明底条 ──
     if keyword:
         margin = 60
-        kw_lines = wrap_text(keyword, font_large, width - margin * 2, draw)[:2]
+        tmp_draw = ImageDraw.Draw(img)
+        kw_lines = wrap_text(keyword, font_large, width - margin * 2, tmp_draw)[:2]
         line_h = font_size * 2 + 12
         total_h = line_h * len(kw_lines)
         y_start = height // 3 - total_h // 2
+
+        # 底条：独立 RGBA overlay
+        pad = 25
+        bar_top = max(0, y_start - pad)
+        bar_bottom = min(height, y_start + total_h + pad)
+        bar_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        bar_draw = ImageDraw.Draw(bar_layer)
+        bar_draw.rectangle((margin - pad, bar_top, width - margin + pad, bar_bottom), fill=(0, 0, 0, 60))
+        img = Image.alpha_composite(img, bar_layer)
+
+        # 文字画在新的 overlay 上
+        txt_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        txt_draw = ImageDraw.Draw(txt_layer)
         for i, line in enumerate(kw_lines):
-            bbox = draw.textbbox((0, 0), line, font=font_large)
+            bbox = txt_draw.textbbox((0, 0), line, font=font_large)
             tw = bbox[2] - bbox[0]
             x = (width - tw) // 2
             y = y_start + i * line_h
-            draw.text((x, y), line, fill="white", font=font_large, stroke_width=2, stroke_fill="black")
+            txt_draw.text((x, y), line, fill=(255, 255, 255, 255), font=font_large, stroke_width=3, stroke_fill=(0, 0, 0, 255))
+        img = Image.alpha_composite(img, txt_layer)
 
-    # 字幕底部（自动换行 + 描边）
+    # ── 字幕底部 ──
     if text:
         margin = 60
-        sub_lines = wrap_text(text, font_sub, width - margin * 2, draw)
+        tmp_draw = ImageDraw.Draw(img)
+        sub_lines = wrap_text(text, font_sub, width - margin * 2, tmp_draw)
         line_h = font_size + 8
         total_h = line_h * len(sub_lines)
         y_start = height * 3 // 4 - total_h // 2
-        for i, line in enumerate(sub_lines):
-            bbox = draw.textbbox((0, 0), line, font=font_sub)
-            tw = bbox[2] - bbox[0]
-            x = (width - tw) // 2
-            y = y_start + i * line_h
-            draw.text((x, y), line, fill="white", font=font_sub, stroke_width=2, stroke_fill="black")
 
-    return np.array(img)
+        # 阴影层
+        if subtitle_shadow:
+            shadow_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            shadow_draw = ImageDraw.Draw(shadow_layer)
+            for i, line in enumerate(sub_lines):
+                bbox = shadow_draw.textbbox((0, 0), line, font=font_sub)
+                tw = bbox[2] - bbox[0]
+                x = (width - tw) // 2 + 2
+                y = y_start + i * line_h + 2
+                shadow_draw.text((x, y), line, fill=(0, 0, 0, 80), font=font_sub)
+            img = Image.alpha_composite(img, shadow_layer)
+
+        # 主字幕层（含高亮）
+        sub_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        sub_draw = ImageDraw.Draw(sub_layer)
+        for i, line in enumerate(sub_lines):
+            if keyword_highlight and keyword:
+                segments = _highlight_keyword_segments(line, keyword)
+            else:
+                segments = [(line, False)]
+            # 整行宽度 → 居中
+            total_w = sum(sub_draw.textbbox((0, 0), seg, font=font_sub)[2] - sub_draw.textbbox((0, 0), seg, font=font_sub)[0] for seg, _ in segments)
+            x = (width - total_w) // 2
+            y = y_start + i * line_h
+            for seg, is_kw in segments:
+                if not seg:
+                    continue
+                fill = (*accent_color, 255) if is_kw else (255, 255, 255, 255)
+                sub_draw.text((x, y), seg, fill=fill, font=font_sub, stroke_width=2, stroke_fill=(0, 0, 0, 255))
+                seg_bb = sub_draw.textbbox((0, 0), seg, font=font_sub)
+                x += seg_bb[2] - seg_bb[0]
+        img = Image.alpha_composite(img, sub_layer)
+
+    return np.array(img.convert("RGB"))
 
 
 def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mute: bool = False) -> str:
@@ -141,7 +271,11 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
     font_path = resolve_font_path(config)
 
     # 预生成渐变背景（只生成一次，每帧复用）
-    bg_image = Image.fromarray(_create_background(width, height))
+    bg_style = str(config.get("video", {}).get("background_style", "tech_grid")).lower().strip()
+    if bg_style == "gradient":
+        bg_image = Image.fromarray(_create_background(width, height)).convert("RGBA")
+    else:
+        bg_image = _create_enhanced_background(width, height, style=bg_style)
 
     # 素材池加载
     render_mode = config["video"].get("render_mode", "gradient")
@@ -202,6 +336,10 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
     # 计算总时长
     total_duration = timestamps[-1]["end"] if timestamps else 10
 
+    # 字幕增强配置
+    kw_highlight = config.get("video", {}).get("keyword_highlight", True)
+    sub_shadow = config.get("video", {}).get("subtitle_shadow", True)
+
     def make_frame(t):
         keyword = ""
         text = ""
@@ -220,7 +358,10 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
                     except Exception:
                         pass  # fallback to gradient
                 break
-        return _render_frame(width, height, text, keyword, font_path, config["video"]["subtitle_fontsize"], bg)
+        return _render_frame(
+            width, height, text, keyword, font_path, config["video"]["subtitle_fontsize"], bg,
+            keyword_highlight=kw_highlight, subtitle_shadow=sub_shadow,
+        )
 
     video = VideoClip(make_frame, duration=total_duration)
     audio_clip = None
@@ -314,6 +455,21 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
         "mode": bgm_mode,
         "id": bgm_info.get("bgm_id") or bgm_info.get("id") or bgm_id,
         "reason": bgm_info.get("reason"),
+    }
+    # quality 字段
+    total = len(timestamps)
+    seen_kw: set[str] = set()
+    missed_deduped: list[dict] = []
+    for s in footage_segments:
+        kw = s.get("keyword", "").strip()
+        if s.get("source") in ("gradient_fallback", "gradient") and kw and kw not in seen_kw:
+            seen_kw.add(kw)
+            missed_deduped.append({"keyword": kw})
+    report["quality"] = {
+        "match_rate": round(matched / total, 3) if total else 0,
+        "footage_coverage": round((matched + abstract_fb) / total, 3) if total else 0,
+        "score": _compute_quality_score(matched, abstract_fb, total),
+        "missed_keywords": missed_deduped[:10],
     }
     report_path = output_dir / "render_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

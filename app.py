@@ -446,10 +446,22 @@ def _read_render_report(sid: str) -> str:
         r = json.loads(report_path.read_text("utf-8"))
         parts = []
         if r.get("render_mode") == "footage":
-            parts.append(
-                f"素材命中: {r['footage_hits']}/{r['segments_total']}\n"
-                f"关键词命中: {r['matched']}  |  abstract fallback: {r['abstract_fallback']}  |  渐变 fallback: {r['gradient_fallback']}"
-            )
+            total = r.get("segments_total", 0)
+            q = r.get("quality", {})
+            if q:
+                # 新版：含 quality 字段
+                line1 = f"素材命中: {r['footage_hits']}/{total} ({q.get('match_rate', 0):.1%})  覆盖: {int(q.get('footage_coverage', 0) * total)}/{total} ({q.get('footage_coverage', 0):.1%})  质量分: {q.get('score', 0)}"
+                line2 = f"关键词命中: {r['matched']}  |  abstract: {r['abstract_fallback']}  |  渐变: {r['gradient_fallback']}"
+                parts.append(f"{line1}\n{line2}")
+                missed = q.get("missed_keywords", [])
+                if missed:
+                    parts.append(f"未命中: {', '.join(m['keyword'] for m in missed[:5])}")
+            else:
+                # 旧版：无 quality 字段
+                parts.append(
+                    f"素材命中: {r['footage_hits']}/{total}\n"
+                    f"关键词命中: {r['matched']}  |  abstract fallback: {r['abstract_fallback']}  |  渐变 fallback: {r['gradient_fallback']}"
+                )
         bgm = r.get("bgm")
         if bgm:
             mode_labels = {"mute": "静音", "manual": "手动", "auto_fallback": "自动(回退)", "auto": "自动"}
