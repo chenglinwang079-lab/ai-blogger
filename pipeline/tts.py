@@ -320,15 +320,27 @@ def _generate_hybrid(
     return str(audio_path), durations, backends, fallback_reason
 
 
-def generate_audio(script_id: str, config: dict) -> dict:
+def generate_audio(script_id: str, config: dict, *, backend: str | None = None) -> dict:
     """生成音频。
 
     - 读取 cheat/scripts/<script_id>/final.md
     - 单段超 max_segment_chars → 自动拆分
     - 每段独立：VoxCPM2 优先，失败段自动降级 edge-tts
     - 输出 dist/<script_id>/audio.wav + timestamps.json
+    - backend: 显式覆盖 TTS 后端（"edge-tts" / "voxcpm2" / "hybrid"），None 则读 config
     """
     from pipeline import update_manifest, validate_script_id
+
+    # 显式 backend override
+    if backend is not None:
+        backend = backend.lower().strip()
+        allowed = ("edge-tts", "voxcpm2", "hybrid")
+        if backend not in allowed:
+            raise ValueError(f"Invalid TTS backend: {backend!r}, must be one of {allowed}")
+        tts_cfg = config.get("tts", {})
+        if not isinstance(tts_cfg, dict):
+            raise TypeError(f"config['tts'] must be a dict, got {type(tts_cfg).__name__}")
+        config = {**config, "tts": {**tts_cfg, "backend": backend}}
 
     validate_script_id(script_id)
     cheat_root = Path(config["paths"]["cheat_root"])

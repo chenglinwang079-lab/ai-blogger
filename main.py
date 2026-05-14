@@ -128,7 +128,7 @@ def _load_manifest(script_id: str, config: dict) -> dict | None:
     return None
 
 
-def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = None, config: dict | None = None, force: bool = False, bgm_id: str | None = None, mute: bool = False, style_id: str | None = None) -> dict | None:
+def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = None, config: dict | None = None, force: bool = False, bgm_id: str | None = None, mute: bool = False, style_id: str | None = None, tts_backend: str | None = None) -> dict | None:
     """执行单步，返回结果 dict。"""
     from pipeline import topic as topic_mod
     from pipeline import script as script_mod
@@ -161,7 +161,7 @@ def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = N
         if not script_id:
             logger.error("tts 步骤需要 --script-id")
             return None
-        return tts_mod.generate_audio(script_id, config)
+        return tts_mod.generate_audio(script_id, config, backend=tts_backend)
 
     elif step == "render":
         if not script_id:
@@ -211,7 +211,7 @@ def cmd_run(args: argparse.Namespace, config: dict) -> None:
 
     for step in steps_to_run:
         logger.info(f"--- 步骤: {step} ---")
-        result = _run_step(step, topic=topic, script_id=script_id, config=config, force=args.force, style_id=getattr(args, "style", None))
+        result = _run_step(step, topic=topic, script_id=script_id, config=config, force=args.force, style_id=getattr(args, "style", None), tts_backend=getattr(args, "tts_backend", None))
 
         if result is None:
             logger.error(f"步骤 {step} 失败，终止")
@@ -249,6 +249,7 @@ def cmd_step(args: argparse.Namespace, config: dict) -> None:
         bgm_id=getattr(args, "bgm_id", None),
         mute=getattr(args, "mute", False),
         style_id=getattr(args, "style", None),
+        tts_backend=getattr(args, "tts_backend", None),
     )
 
     if result is None:
@@ -863,6 +864,7 @@ def main():
     p_run.add_argument("--until", type=str, help="执行到指定步骤为止")
     p_run.add_argument("--force", action="store_true", help="忽略 checkpoint，从头重跑")
     p_run.add_argument("--style", type=str, default=None, help="脚本风格 ID（如 serious_science）")
+    p_run.add_argument("--tts-backend", type=str, default=None, choices=["edge-tts", "voxcpm2", "hybrid"], help="覆盖 TTS 后端（默认读 config.toml）")
     p_run.set_defaults(func=cmd_run)
 
     # step
@@ -876,6 +878,7 @@ def main():
     p_step.add_argument("--bgm-id", type=str, default=None, help="手动指定 BGM ID")
     p_step.add_argument("--mute", action="store_true", help="静音（不加 BGM）")
     p_step.add_argument("--style", type=str, default=None, help="脚本风格 ID（如 serious_science）")
+    p_step.add_argument("--tts-backend", type=str, default=None, choices=["edge-tts", "voxcpm2", "hybrid"], help="覆盖 TTS 后端（默认读 config.toml）")
     p_step.set_defaults(func=cmd_step)
 
     # export

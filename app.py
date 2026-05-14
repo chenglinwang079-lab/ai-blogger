@@ -35,6 +35,18 @@ ensure_directories(config)
 CHEAT_ROOT = PROJECT_ROOT / config["paths"]["cheat_root"]
 OUTPUT_DIR = PROJECT_ROOT / config["paths"]["output_dir"]
 
+
+def _normalize_tts_for_ui(backend: str) -> str:
+    """将 config backend 值映射到 UI Radio choices。hybrid→voxcpm2，未知→edge-tts。"""
+    if backend == "voxcpm2":
+        return "voxcpm2"
+    if backend == "hybrid":
+        return "voxcpm2"
+    return "edge-tts"
+
+
+_default_tts = _normalize_tts_for_ui(config["tts"].get("backend", "edge-tts"))
+
 tts_lock = threading.Lock()
 
 # ── 辅助函数 ─────────────────────────────────────────────────────────────
@@ -380,7 +392,7 @@ def bgm_select_cb(bgm_id_val: str):
     return f"🎵 {bgm_id_val} | mood={mood} energy={energy}", preview
 
 
-def tts_gen_cb(script_id_choice: str):
+def tts_gen_cb(script_id_choice: str, tts_backend_val: str):
     """TTS 生成（generator yield 进度）。"""
     sid = parse_script_id(script_id_choice)
     if not sid:
@@ -390,7 +402,7 @@ def tts_gen_cb(script_id_choice: str):
     yield "⏳ 正在生成音频...", None, "", ""
 
     with tts_lock:
-        result, err = safe_call(generate_audio, sid, config)
+        result, err = safe_call(generate_audio, sid, config, backend=tts_backend_val)
 
     if err:
         yield f"```\n{err}\n```", None, "", ""
@@ -497,7 +509,7 @@ def stock_fill_cb(script_id_choice: str):
     yield "\n".join(lines)
 
 
-def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient", bgm_mode: str = "自动匹配", bgm_id: str | None = None):
+def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient", bgm_mode: str = "自动匹配", bgm_id: str | None = None, tts_backend_val: str | None = None):
     """TTS + 渲染一键执行（generator 顺序 yield）。"""
     sid = parse_script_id(script_id_choice)
     if not sid:
@@ -507,7 +519,7 @@ def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient", bgm_mo
     # TTS
     yield "⏳ [1/2] 正在生成音频...", None, None, ""
     with tts_lock:
-        tts_result, tts_err = safe_call(generate_audio, sid, config)
+        tts_result, tts_err = safe_call(generate_audio, sid, config, backend=tts_backend_val)
     if tts_err:
         yield f"```\n{tts_err}\n```", None, None, ""
         return
@@ -815,7 +827,7 @@ def wf_go_cb(state):
     return gr.update(interactive=True)
 
 
-def wf_pipeline_cb(state, render_mode):
+def wf_pipeline_cb(state, render_mode, tts_backend_val=None):
     """Step 4: TTS → 渲染 → 导出。"""
     sid = state.get("selected_script_id")
     if not sid:
@@ -833,7 +845,7 @@ def wf_pipeline_cb(state, render_mode):
     # TTS
     yield "⏳ [1/3] TTS...", None, "", pipe_disabled
     with tts_lock:
-        tts_result, tts_err = safe_call(generate_audio, sid, cfg)
+        tts_result, tts_err = safe_call(generate_audio, sid, cfg, backend=tts_backend_val)
     if tts_err:
         yield f"❌ TTS 失败:\n```\n{tts_err}\n```", None, "", gr.update(interactive=True)
         return
@@ -1283,6 +1295,12 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 btn_gen_refresh = gr.Button("刷新列表")
 
             gr.Markdown("### TTS 音频生成")
+            tts_backend_sel = gr.Radio(
+                choices=["edge-tts", "voxcpm2"],
+                value=_default_tts,
+                label="TTS 引擎",
+                info="edge-tts: 稳定无需 GPU | voxcpm2: 首次加载约 30s，占用 GPU 显存，失败自动降级 edge-tts",
+            )
             btn_tts = gr.Button("生成音频", variant="primary")
             tts_status = gr.Markdown()
             with gr.Row():
@@ -1361,7 +1379,7 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
 
             btn_tts.click(
                 fn=tts_gen_cb,
-                inputs=[gen_dropdown],
+                inputs=[gen_dropdown, tts_backend_sel],
                 outputs=[tts_status, tts_audio, tts_backend, tts_duration],
                 concurrency_limit=1,
             )
@@ -1379,7 +1397,7 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             )
             btn_pipeline.click(
                 fn=pipeline_gen_cb,
-                inputs=[gen_dropdown, render_mode, bgm_mode, bgm_dropdown],
+                inputs=[gen_dropdown, render_mode, bgm_mode, bgm_dropdown, tts_backend_sel],
                 outputs=[pipeline_status, pipeline_audio, pipeline_video, pipeline_info],
                 concurrency_limit=1,
             )
@@ -1685,6 +1703,12 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             wf_rm = gr.Radio(
                 choices=["gradient", "footage"], value="gradient", label="渲染模式",
             )
+            wf_tts_backend = gr.Radio(
+                choices=["edge-tts", "voxcpm2"],
+                value=_default_tts,
+                label="TTS 引擎",
+                info="首次加载约 30s，占用 GPU 显存，失败自动降级 edge-tts",
+            )
             btn_wf_pipe = gr.Button("TTS → 渲染 → 导出", variant="stop", interactive=False)
             wf_pipe_status = gr.Markdown("")
             wf_pipe_video = gr.Video(label="视频")
@@ -1741,7 +1765,7 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
             # Step 4
             btn_wf_pipe.click(
                 fn=wf_pipeline_cb,
-                inputs=[wf_state, wf_rm],
+                inputs=[wf_state, wf_rm, wf_tts_backend],
                 outputs=[wf_pipe_status, wf_pipe_video, wf_export_md, btn_wf_pipe],
             )
 
