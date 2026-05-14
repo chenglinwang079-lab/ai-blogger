@@ -1299,7 +1299,7 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 choices=["edge-tts", "voxcpm2"],
                 value=_default_tts,
                 label="TTS 引擎",
-                info="edge-tts: 稳定无需 GPU | voxcpm2: 首次加载约 30s，占用 GPU 显存，失败自动降级 edge-tts",
+                info="edge-tts: 稳定无需 GPU | voxcpm2: 12 段约 3 分钟，占用 ~6GB 显存，可能超时 fallback",
             )
             btn_tts = gr.Button("生成音频", variant="primary")
             tts_status = gr.Markdown()
@@ -1707,7 +1707,7 @@ with gr.Blocks(title="AI Blogger 工作台") as app:
                 choices=["edge-tts", "voxcpm2"],
                 value=_default_tts,
                 label="TTS 引擎",
-                info="首次加载约 30s，占用 GPU 显存，失败自动降级 edge-tts",
+                info="12 段约 3 分钟，占用 ~6GB 显存，可能超时 fallback 到 edge-tts",
             )
             btn_wf_pipe = gr.Button("TTS → 渲染 → 导出", variant="stop", interactive=False)
             wf_pipe_status = gr.Markdown("")
