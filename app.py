@@ -80,6 +80,27 @@ def parse_script_id(choice: str) -> str | None:
     return None
 
 
+def _format_tts_result(result: dict) -> str:
+    """格式化 TTS 结果为 Markdown 提示。"""
+    backend = result.get("backend", "?")
+    total = result.get("segments_total", "?")
+    seg_vox = result.get("segments_voxcpm2", 0)
+    seg_edge = result.get("segments_edge_tts", 0)
+    fb = result.get("fallback_reason")
+    dur = result.get("duration", "?")
+    path = result.get("audio_path", "")
+
+    lines = [
+        f"**后端**: `{backend}`",
+        f"**段分布**: VoxCPM2 {seg_vox}/{total} · edge-tts {seg_edge}/{total}",
+    ]
+    if fb:
+        lines.append(f"**降级原因**: `{fb}`")
+    lines.append(f"**时长**: {dur}s")
+    lines.append(f"**路径**: `{path}`")
+    return "\n".join(lines)
+
+
 def existing_path(path) -> str | None:
     """文件存在返回路径字符串，不存在返回 None。"""
     return str(path) if Path(path).exists() else None
@@ -408,19 +429,8 @@ def tts_gen_cb(script_id_choice: str, tts_backend_val: str):
         yield f"```\n{err}\n```", None, "", ""
         return
 
-    segments_total = result.get("segments_total", "?")
-    segments_voxcpm2 = result.get("segments_voxcpm2", 0)
-    segments_edge_tts = result.get("segments_edge_tts", 0)
-    fallback_reason = result.get("fallback_reason") or "none"
-
     yield (
-        f"✅ 音频完成\n"
-        f"backend: {result['backend']}\n"
-        f"VoxCPM2: {segments_voxcpm2}/{segments_total} 段\n"
-        f"edge-tts: {segments_edge_tts}/{segments_total} 段\n"
-        f"fallback_reason: {fallback_reason}\n"
-        f"duration: {result['duration']}s\n"
-        f"path: {result['audio_path']}",
+        f"✅ 音频完成\n\n{_format_tts_result(result)}",
         existing_path(result["audio_path"]),
         result["backend"],
         f"{result['duration']}s",
@@ -524,17 +534,7 @@ def pipeline_gen_cb(script_id_choice: str, render_mode: str = "gradient", bgm_mo
         yield f"```\n{tts_err}\n```", None, None, ""
         return
 
-    seg_total = tts_result.get("segments_total", "?")
-    seg_vox = tts_result.get("segments_voxcpm2", 0)
-    seg_edge = tts_result.get("segments_edge_tts", 0)
-    fb_reason = tts_result.get("fallback_reason") or "none"
-    audio_info = (
-        f"audio: {tts_result['audio_path']}\n"
-        f"backend: {tts_result['backend']} "
-        f"(VoxCPM2: {seg_vox}/{seg_total}, edge-tts: {seg_edge}/{seg_total}, "
-        f"fallback: {fb_reason})\n"
-        f"duration: {tts_result['duration']}s"
-    )
+    audio_info = _format_tts_result(tts_result)
 
     # 临时覆盖 render_mode
     cfg = dict(config)
@@ -850,8 +850,10 @@ def wf_pipeline_cb(state, render_mode, tts_backend_val=None):
         yield f"❌ TTS 失败:\n```\n{tts_err}\n```", None, "", gr.update(interactive=True)
         return
 
+    tts_info = _format_tts_result(tts_result)
+
     # Render
-    yield "⏳ [2/3] 渲染...", None, "", pipe_disabled
+    yield f"⏳ [2/3] 渲染...\n\n{tts_info}", None, "", pipe_disabled
     render_result, render_err = safe_call(render_video, sid, cfg)
     if render_err:
         yield f"❌ 渲染失败:\n```\n{render_err}\n```", None, "", gr.update(interactive=True)
@@ -872,6 +874,8 @@ def wf_pipeline_cb(state, render_mode, tts_backend_val=None):
 
     summary = (
         f"✅ 全部完成\n\n"
+        f"### TTS\n{tts_info}\n\n"
+        f"### 输出\n"
         f"**发布包**: `{export_result}`\n"
         f"**视频**: `{render_result}`\n"
         f"**标题**: {title}\n"
