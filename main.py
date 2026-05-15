@@ -598,6 +598,31 @@ def cmd_footage(args: argparse.Namespace, config: dict) -> None:
                 print(f"  [{issue['type']}] {issue['path']}")
         print()
 
+    elif args.footage_action == "download":
+        from pipeline.stock import download_footage_by_category
+        queries = [q.strip() for q in args.queries.split(",") if q.strip()]
+        if not queries:
+            logger.error("搜索词为空")
+            return
+        try:
+            result = download_footage_by_category(
+                args.category, queries, config, limit_per_query=args.limit,
+            )
+        except ValueError as e:
+            logger.error(f"参数错误: {e}")
+            return
+        print(f"\n分类下载: {result['category']}")
+        print(f"  下载: {result['total_downloaded']} 个")
+        if result["details"]:
+            print(f"  成功:")
+            for d in result["details"]:
+                print(f"    {d['query']} ({d['provider']}): {d['local_path']}")
+        if result["failed"]:
+            print(f"  失败: {len(result['failed'])} 个")
+            for f in result["failed"]:
+                print(f"    {f['query']} ({f['provider']}): {f['reason']}")
+        print()
+
 
 def cmd_queue(args: argparse.Namespace, config: dict) -> None:
     """queue 命令：发布队列管理。"""
@@ -935,6 +960,11 @@ def main():
     p_missed.set_defaults(func=cmd_footage)
     p_health = footage_sub.add_parser("health", help="外部素材健康检查")
     p_health.set_defaults(func=cmd_footage)
+    p_download = footage_sub.add_parser("download", help="按分类下载素材")
+    p_download.add_argument("--category", required=True, help="目标目录名，如 people, document")
+    p_download.add_argument("--queries", required=True, help="搜索词，逗号分隔")
+    p_download.add_argument("--limit", type=int, default=3, help="每个搜索词下载数量")
+    p_download.set_defaults(func=cmd_footage)
 
     # queue
     p_queue = subparsers.add_parser("queue", help="发布队列管理")

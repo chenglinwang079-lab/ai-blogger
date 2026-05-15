@@ -251,16 +251,17 @@ def _pick_download_url(item: dict, config: dict) -> str | None:
     return None
 
 
-def _download_video(item: dict, dest_dir: Path, config: dict) -> str | None:
-    """下载视频到 dest_dir，返回相对路径或 None。校验用 .part → os.replace。"""
+def _download_video(item: dict, dest_dir: Path, config: dict, *, filename: str | None = None) -> str | None:
+    """下载视频到 dest_dir，返回路径字符串或 None。校验用 .part → os.replace。"""
     download_url = _pick_download_url(item, config)
     if not download_url:
         return None
 
     provider = item["provider"]
-    query_slug = _slugify(item["query"])
+    query_slug = _slugify(item["query"]) or "stock"
     source_id = item["source_id"]
-    filename = f"{provider}-{query_slug}-{source_id}.mp4"
+    if filename is None:
+        filename = f"{provider}-{query_slug}-{source_id}.mp4"
     final_path = dest_dir / filename
     part_path = dest_dir / (filename + ".part")
 
@@ -299,6 +300,99 @@ def _download_video(item: dict, dest_dir: Path, config: dict) -> str | None:
 
     os.replace(str(part_path), str(final_path))
     return str(final_path)
+
+
+# ── 按分类下载 ──────────────────────────────────────────────────────
+
+def download_footage_by_category(
+    category: str,
+    queries: list[str],
+    config: dict,
+    *,
+    limit_per_query: int | None = None,
+) -> dict:
+    """按分类搜索下载素材到 assets/footage/<category>/。
+
+    category 只允许 [a-z0-9_-]+，resolve 后必须在 footage_dir 下。
+    """
+    import hashlib
+
+    if not re.match(r'^[a-z0-9_-]+$', category):
+        raise ValueError(f"非法 category 名: {category!r}（只允许 [a-z0-9_-]+）")
+
+    footage_dir = Path(config["paths"].get("footage_dir", "assets/footage"))
+    if not footage_dir.is_absolute():
+        footage_dir = Path(__file__).resolve().parents[1] / footage_dir
+    dest_dir = (footage_dir / category).resolve()
+    try:
+        dest_dir.relative_to(footage_dir.resolve())
+    except ValueError:
+        raise ValueError(f"category 路径越界: {dest_dir}")
+
+    stock = config.get("stock", {})
+    providers = stock.get("provider_order", ["pexels", "pixabay"])
+    per_query = limit_per_query if limit_per_query is not None else stock.get("max_downloads_per_keyword", 2)
+    sources = _load_sources(footage_dir)
+    result: dict = {"category": category, "total_downloaded": 0, "failed": [], "details": []}
+
+    for query in queries:
+        downloaded = 0
+        slug = _slugify(query) or "stock"
+
+        for prov in providers:
+            if downloaded >= per_query:
+                break
+
+            env_key = config.get("api", {}).get(f"{prov}_api_key_env", f"{prov.upper()}_API_KEY")
+            if not _get_api_key(env_key):
+                result["failed"].append({"query": query, "provider": prov, "reason": f"{env_key} 未设置"})
+                continue
+
+            try:
+                if prov == "pexels":
+                    items = _search_pexels(query, config)
+                elif prov == "pixabay":
+                    items = _search_pixabay(query, config)
+                else:
+                    result["failed"].append({"query": query, "provider": prov, "reason": "未知 provider"})
+                    continue
+            except Exception as e:
+                result["failed"].append({"query": query, "provider": prov, "reason": str(e)})
+                continue
+
+            for item in items:
+                if downloaded >= per_query:
+                    break
+
+                dedupe_key = f"{item['provider']}:{item['source_id']}"
+                if _is_duplicate(sources, dedupe_key):
+                    continue
+
+                short_hash = hashlib.md5(dedupe_key.encode()).hexdigest()[:8]
+                filename = f"{category}-{prov}-{slug}-{short_hash}.mp4"
+                path = _download_video(item, dest_dir, config, filename=filename)
+                if not path:
+                    continue
+
+                sources.append({
+                    "path": path, "provider": item["provider"],
+                    "source_id": item["source_id"], "query": query,
+                    "source_url": item.get("source_url", ""),
+                    "author": item.get("author", ""),
+                    "downloaded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "dedupe_key": dedupe_key, "category": category,
+                })
+                _save_sources(footage_dir, sources)
+
+                result["details"].append({
+                    "query": query, "provider": prov,
+                    "url": item.get("source_url", ""),
+                    "local_path": path, "status": "ok",
+                })
+                downloaded += 1
+                result["total_downloaded"] += 1
+
+    return result
 
 
 # ── 主流程 ──────────────────────────────────────────────────────────
