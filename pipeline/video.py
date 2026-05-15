@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from pathlib import Path
 
 import numpy as np
@@ -223,6 +224,71 @@ def _render_frame(
     return np.array(img.convert("RGB"))
 
 
+def _normalize(text: str) -> str:
+    """去 markdown 标记和空白，保留中文/英文/数字内容。"""
+    text = re.sub(r'[*#]+', '', text)
+    text = re.sub(r'\s+', '', text)
+    return text.strip()
+
+
+def _parse_script_segments(raw_md: str) -> list[tuple[str, str]]:
+    """解析 draft.md，返回 [(normalized_seg_text, keyword), ...]。"""
+    segments = []
+    current_kw = ""
+    current_lines = []
+
+    for line in raw_md.split("\n"):
+        if re.match(r'^#{2,3}\s*段\s*\d+', line):
+            if current_kw or current_lines:
+                seg_text = _normalize("".join(current_lines))
+                if seg_text:
+                    segments.append((seg_text, current_kw))
+            current_kw = ""
+            current_lines = []
+            continue
+        kw_match = re.match(r'^\*\*画面\*\*\s*[:：]?\s*(.+)$', line)
+        if kw_match:
+            current_kw = kw_match.group(1).strip()
+            continue
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#') and not re.match(r'^-{3,}$', stripped):
+            current_lines.append(stripped)
+
+    if current_kw or current_lines:
+        seg_text = _normalize("".join(current_lines))
+        if seg_text:
+            segments.append((seg_text, current_kw))
+
+    return segments
+
+
+def _map_timestamps_to_keywords(
+    timestamps: list[dict],
+    script_segments: list[tuple[str, str]],
+) -> list[str]:
+    """将每个 timestamp 文本归属到原脚本段，继承其 keyword。"""
+    keywords = []
+    for ts in timestamps:
+        ts_norm = _normalize(ts.get("text", ""))
+        best_kw = ""
+        if ts_norm:
+            for seg_norm, seg_kw in script_segments:
+                if ts_norm in seg_norm:
+                    best_kw = seg_kw
+                    break
+                if len(ts_norm) >= 6 and seg_norm.startswith(ts_norm[:min(20, len(ts_norm))]):
+                    best_kw = seg_kw
+                    break
+        keywords.append(best_kw or (keywords[-1] if keywords else ""))
+    return keywords
+
+
+def _extract_keywords_from_md(raw_md: str) -> list[str]:
+    """从 md 中用 regex 提取 **画面** 行的关键词列表。"""
+    pattern = re.compile(r'^\*\*画面\*\*\s*[:：]?\s*(.+)$')
+    return [m.group(1).strip() for line in raw_md.split("\n") if (m := pattern.match(line.strip()))]
+
+
 def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mute: bool = False) -> str:
     """模板视频渲染。
 
@@ -257,13 +323,26 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         title = manifest.get("title", "")
 
-    # 读取 draft.md 提取关键词
+    # 读取 draft.md 提取关键词（文本归属映射）
     draft_path = cheat_root / "scripts" / script_id / "draft.md"
     keywords = []
     if draft_path.exists():
-        for line in draft_path.read_text(encoding="utf-8").split("\n"):
-            if line.startswith("**画面**:"):
-                keywords.append(line.split(":", 1)[1].strip())
+        raw = draft_path.read_text(encoding="utf-8")
+        script_segments = _parse_script_segments(raw)
+        if script_segments:
+            keywords = _map_timestamps_to_keywords(timestamps, script_segments)
+        if not keywords:
+            keywords = _extract_keywords_from_md(raw)
+    # 兼容 final.md
+    if not keywords:
+        final_path = cheat_root / "scripts" / script_id / "final.md"
+        if final_path.exists():
+            final_raw = final_path.read_text(encoding="utf-8")
+            final_segs = _parse_script_segments(final_raw)
+            if final_segs:
+                keywords = _map_timestamps_to_keywords(timestamps, final_segs)
+            if not keywords:
+                keywords = _extract_keywords_from_md(final_raw)
 
     # 视频参数
     res = config["video"]["resolution"].split("x")

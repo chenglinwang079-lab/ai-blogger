@@ -21,6 +21,9 @@ _SCRIPT_REQUIREMENTS = """
 - 开头 3 秒必须有钩子（反问/悬念/冲击性事实）
 - 用词口语化，避免书面语
 - 每段标注 visual_keyword（画面关键词）和 duration_est（预估秒数）
+- visual_keyword 必须是 1-2 个简单画面类别词
+- 优先类别：AI界面、代码编程、数据图表、芯片硬件、机器人、抽象科技
+- 不要输出人物特写、爆炸特效、字幕动态等复杂场景描述
 """
 
 _JSON_FORMAT_INSTRUCTION = """

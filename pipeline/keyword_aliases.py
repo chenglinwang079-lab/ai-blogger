@@ -19,6 +19,10 @@ ALIASES: dict[str, set[str]] = {
     "chatgpt": {"ai"},
     "openai": {"ai"},
     "多模态": {"ai"},
+    "博主": {"ai"},
+    "创作者": {"ai"},
+    "ai工具": {"ai"},
+    "创造力": {"abstract"},
     # 文档/数据 → data
     "pdf": {"data"},
     "网络": {"network", "internet"},
