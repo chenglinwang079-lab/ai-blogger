@@ -145,6 +145,29 @@ def _build_bgm_effects(
     return effects
 
 
+def _get_segment_bg(
+    seg_idx: int,
+    t: float,
+    timestamps: list[dict],
+    footage_clips: list,
+    bg_image: Image.Image,
+    width: int,
+    height: int,
+) -> Image.Image:
+    """获取指定段的背景帧（Image.RGBA）。用于 crossfade 取下一帧。"""
+    ts = timestamps[seg_idx]
+    if seg_idx < len(footage_clips) and footage_clips[seg_idx] is not None:
+        try:
+            clip = footage_clips[seg_idx]
+            if clip.duration and clip.duration > 0:
+                ft = (t - ts["start"]) % clip.duration
+                frame = clip.get_frame(ft)
+                return _cover_frame(frame, width, height).convert("RGBA")
+        except Exception:
+            pass
+    return bg_image.convert("RGBA")
+
+
 def _render_frame(
     width: int,
     height: int,
@@ -457,13 +480,16 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
     # 字幕增强配置
     kw_highlight = config.get("video", {}).get("keyword_highlight", True)
     sub_shadow = config.get("video", {}).get("subtitle_shadow", True)
+    transition_duration = max(0.0, float(config["video"].get("transition_duration", 0.3)))
 
     def make_frame(t):
         keyword = ""
         text = ""
         bg = bg_image
+        cur_idx = -1
         for i, ts in enumerate(timestamps):
             if ts["start"] <= t < ts["end"]:
+                cur_idx = i
                 keyword = keywords[i] if i < len(keywords) and keywords[i] else "abstract"
                 text = ts["text"]
                 if i < len(footage_clips) and footage_clips[i] is not None:
@@ -476,6 +502,22 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
                     except Exception:
                         pass  # fallback to gradient
                 break
+
+        # crossfade：当前段最后 transition_duration 秒与下一段首帧混合
+        # 仅当当前段或下一段至少有一个 footage 时才执行
+        has_current = 0 <= cur_idx < len(footage_clips) and footage_clips[cur_idx] is not None
+        has_next = 0 <= cur_idx + 1 < len(footage_clips) and footage_clips[cur_idx + 1] is not None
+        if transition_duration > 0 and cur_idx >= 0 and (has_current or has_next):
+            ts = timestamps[cur_idx]
+            seg_duration = max(0.0, ts["end"] - ts["start"])
+            fade = min(transition_duration, seg_duration)
+            remaining = ts["end"] - t
+            if fade > 0 and remaining < fade and cur_idx + 1 < len(timestamps):
+                alpha = 1.0 - remaining / fade  # 0→1，当前帧渐变到下一帧
+                next_bg = _get_segment_bg(cur_idx + 1, timestamps[cur_idx + 1]["start"],
+                                           timestamps, footage_clips, bg_image, width, height)
+                bg = Image.blend(bg.convert("RGBA"), next_bg, alpha)
+
         return _render_frame(
             width, height, text, keyword, font_path, config["video"]["subtitle_fontsize"], bg,
             keyword_highlight=kw_highlight, subtitle_shadow=sub_shadow,
