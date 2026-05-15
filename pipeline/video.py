@@ -373,11 +373,13 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
         logger.info(f"素材索引: {len(idx)} 个文件")
 
         used_footage: set[str] = set()
+        recent_selections: list[str] = []
 
         for i, ts in enumerate(timestamps):
             original_kw = keywords[i] if i < len(keywords) else ""
             kw = original_kw if original_kw else "abstract"
-            result = match_footage_with_reason(kw, idx, exclude_paths=used_footage)
+            result = match_footage_with_reason(kw, idx, exclude_paths=used_footage,
+                                                recent_paths=recent_selections[-5:])
             if result["path"]:
                 path = result["path"]
                 source = "abstract_fallback" if result["reason"] == "abstract_fallback" else "matched"
@@ -397,6 +399,7 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
                     footage_clips.append(clip)
                     footage_hits += 1
                     used_footage.add(str(Path(path).resolve()))
+                    recent_selections.append(str(Path(path).resolve()))
                     footage_segments.append({
                         "index": i, "keyword": original_kw or "", "footage": path,
                         "source": source, "reused": reused, "matched_tag": matched_tag,

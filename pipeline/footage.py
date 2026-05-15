@@ -9,6 +9,7 @@ import time
 from pipeline.keyword_aliases import ALIASES as KEYWORD_ALIASES
 
 _VIDEO_EXTS = {".mp4", ".mov", ".webm", ".avi"}
+_HEX_HASH_RE = re.compile(r'^[0-9a-f]{8}$', re.IGNORECASE)
 
 # ── Blocklist ────────────────────────────────────────────────────────
 
@@ -118,7 +119,7 @@ def index_footage(footage_dir: Path, exclude: set[str] | None = None) -> list[di
                 tags.add(part.lower())
             stem = f.stem.lower()
             for token in re.split(r'[-_\s]+', stem):
-                if len(token) >= 2:
+                if len(token) >= 2 and not _HEX_HASH_RE.fullmatch(token):
                     tags.add(token)
             entries.append({"path": str(f), "tags": tags})
     return entries
@@ -147,41 +148,65 @@ def _build_tokens(keyword: str) -> set[str]:
 
 
 def _score_entry(entry: dict, tokens: set[str]) -> tuple[int, str | None]:
-    """对单个素材条目评分，返回 (score, first_matched_tag)。"""
+    """评分：精确匹配 +3，包含匹配 +1，hash tag 跳过。
+    best_tag 记录最高权重命中的 tag。
+    """
     score = 0
-    first_tag = None
+    best_tag = None
+    best_tag_weight = 0
     for tag in entry["tags"]:
+        if _HEX_HASH_RE.fullmatch(tag):
+            continue
         for tok in tokens:
-            if tag in tok or tok in tag:
+            if tag == tok:
+                score += 3
+                if 3 > best_tag_weight:
+                    best_tag_weight = 3
+                    best_tag = tag
+            elif tag in tok or tok in tag:
                 score += 1
-                if first_tag is None:
-                    first_tag = tag
-    return score, first_tag
+                if 1 > best_tag_weight:
+                    best_tag_weight = 1
+                    best_tag = tag
+    return score, best_tag
 
 
-def _match_in_index(index: list[dict], tokens: set[str]) -> tuple[str | None, str | None]:
-    """在 index 中找最佳匹配，返回 (path, matched_tag)。平局优先非 abstract。"""
+def _match_in_index(
+    index: list[dict],
+    tokens: set[str],
+    recent_penalty: set[str] | None = None,
+) -> tuple[str | None, str | None]:
+    """最佳匹配。recent_penalty 中路径 -1。只返回正分结果。"""
     best_score = 0
     best_path = None
     best_tag = None
     best_is_abstract = True
+    recent = recent_penalty or set()
     for entry in index:
         score, tag = _score_entry(entry, tokens)
+        resolved = str(Path(entry["path"]).resolve())
+        if resolved in recent:
+            score -= 1
         entry_is_abstract = "abstract" in entry["tags"]
         if score > best_score or (score == best_score and best_is_abstract and not entry_is_abstract and score > 0):
             best_score = score
             best_path = entry["path"]
             best_tag = tag
             best_is_abstract = entry_is_abstract
-    return best_path, best_tag
+    return (best_path, best_tag) if best_score > 0 else (None, None)
 
 
-def match_footage(keyword: str, index: list[dict]) -> str | None:
+def match_footage(
+    keyword: str,
+    index: list[dict],
+    *,
+    recent_paths: list[str] | None = None,
+) -> str | None:
     """用 keyword 匹配素材，返回最佳匹配的文件路径或 None。"""
     if not keyword or not index:
         return None
     tokens = _build_tokens(keyword)
-    path, _ = _match_in_index(index, tokens)
+    path, _ = _match_in_index(index, tokens, recent_penalty=set(recent_paths or []))
     if path:
         return path
     abstracts = [e for e in index if "abstract" in e["tags"]]
@@ -195,6 +220,7 @@ def match_footage_with_reason(
     index: list[dict],
     *,
     exclude_paths: set[str] | None = None,
+    recent_paths: list[str] | None = None,
 ) -> dict:
     """返回 {"path", "reason", "reused", "matched_tag"}。
 
@@ -208,6 +234,7 @@ def match_footage_with_reason(
 
     tokens = _build_tokens(keyword)
     exclude = {str(Path(p).resolve()) for p in (exclude_paths or set())}
+    recent = set(recent_paths or [])
 
     def _filter_index(exclude_set: set[str]) -> list[dict]:
         return [e for e in index if str(Path(e["path"]).resolve()) not in exclude_set]
@@ -215,14 +242,14 @@ def match_footage_with_reason(
     # 第一轮：排除已用素材
     if exclude:
         filtered = _filter_index(exclude)
-        path, tag = _match_in_index(filtered, tokens)
+        path, tag = _match_in_index(filtered, tokens, recent_penalty=recent)
         if path:
             parts = {p.lower() for p in Path(path).parts}
             reason = "abstract_fallback" if "abstract" in parts else "matched"
             return {"path": path, "reason": reason, "reused": False, "matched_tag": tag}
 
     # 第二轮：不排除（允许复用）
-    path, tag = _match_in_index(index, tokens)
+    path, tag = _match_in_index(index, tokens, recent_penalty=recent)
     if path:
         parts = {p.lower() for p in Path(path).parts}
         reason = "abstract_fallback" if "abstract" in parts else "matched"
