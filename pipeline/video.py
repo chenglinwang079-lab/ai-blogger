@@ -293,13 +293,17 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
         idx = index_footage(footage_dir, exclude=load_blocklist(footage_dir))
         logger.info(f"素材索引: {len(idx)} 个文件")
 
+        used_footage: set[str] = set()
+
         for i, ts in enumerate(timestamps):
             original_kw = keywords[i] if i < len(keywords) else ""
             kw = original_kw if original_kw else "abstract"
-            result = match_footage_with_reason(kw, idx)
+            result = match_footage_with_reason(kw, idx, exclude_paths=used_footage)
             if result["path"]:
                 path = result["path"]
                 source = "abstract_fallback" if result["reason"] == "abstract_fallback" else "matched"
+                reused = result.get("reused", False)
+                matched_tag = result.get("matched_tag")
                 try:
                     clip = VideoFileClip(path)
                     if not clip.duration or clip.duration <= 0:
@@ -308,27 +312,28 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
                         footage_clips.append(None)
                         footage_segments.append({
                             "index": i, "keyword": original_kw or "", "footage": None,
-                            "source": "gradient_fallback",
+                            "source": "gradient_fallback", "reused": False, "matched_tag": None,
                         })
                         continue
                     footage_clips.append(clip)
                     footage_hits += 1
+                    used_footage.add(str(Path(path).resolve()))
                     footage_segments.append({
                         "index": i, "keyword": original_kw or "", "footage": path,
-                        "source": source,
+                        "source": source, "reused": reused, "matched_tag": matched_tag,
                     })
                 except Exception as e:
                     logger.warning(f"素材加载失败 {path}: {e}")
                     footage_clips.append(None)
                     footage_segments.append({
                         "index": i, "keyword": original_kw or "", "footage": None,
-                        "source": "gradient_fallback",
+                        "source": "gradient_fallback", "reused": False, "matched_tag": None,
                     })
             else:
                 footage_clips.append(None)
                 footage_segments.append({
                     "index": i, "keyword": original_kw or "", "footage": None,
-                    "source": "gradient_fallback",
+                    "source": "gradient_fallback", "reused": False, "matched_tag": None,
                 })
 
         logger.info(f"素材命中: {footage_hits}/{len(timestamps)} 段")
@@ -470,6 +475,25 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
         "footage_coverage": round((matched + abstract_fb) / total, 3) if total else 0,
         "score": _compute_quality_score(matched, abstract_fb, total),
         "missed_keywords": missed_deduped[:10],
+    }
+    # 素材复用统计
+    path_counts: dict[str, int] = {}
+    for s in footage_segments:
+        p = s.get("footage")
+        if p and s.get("source") == "matched":
+            path_counts[p] = path_counts.get(p, 0) + 1
+    unique_matched = len(path_counts)
+    matched_segments = sum(1 for s in footage_segments if s["source"] == "matched")
+    diversity_ratio = round(unique_matched / matched_segments, 3) if matched_segments > 0 else 0
+    top_reused = sorted(
+        [{"path": p, "count": c} for p, c in path_counts.items() if c > 1],
+        key=lambda x: x["count"], reverse=True,
+    )
+    report["footage_reuse"] = {
+        "unique_matched": unique_matched,
+        "matched_segments": matched_segments,
+        "diversity_ratio": diversity_ratio,
+        "top_reused": top_reused,
     }
     report_path = output_dir / "render_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
