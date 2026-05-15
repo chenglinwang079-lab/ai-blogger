@@ -168,6 +168,27 @@ def _get_segment_bg(
     return bg_image.convert("RGBA")
 
 
+def _apply_zoom(
+    frame: np.ndarray,
+    progress: float,
+    zoom_range: float,
+    target_w: int,
+    target_h: int,
+) -> np.ndarray:
+    """对帧应用中心 zoom，返回 cover 尺寸。progress: 0→1，zoom_range: 最大 zoom 比例。"""
+    progress = max(0.0, min(1.0, progress))
+    zoom_range = max(0.0, min(0.5, zoom_range))
+    scale = max(1.0, 1.0 + zoom_range * progress)
+    h, w = frame.shape[:2]
+    new_w = max(1, int(w / scale))
+    new_h = max(1, int(h / scale))
+    x1 = (w - new_w) // 2
+    y1 = (h - new_h) // 2
+    cropped = frame[y1:y1+new_h, x1:x1+new_w]
+    img = Image.fromarray(cropped).resize((target_w, target_h), Image.LANCZOS)
+    return np.array(img)
+
+
 def _render_frame(
     width: int,
     height: int,
@@ -481,6 +502,8 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
     kw_highlight = config.get("video", {}).get("keyword_highlight", True)
     sub_shadow = config.get("video", {}).get("subtitle_shadow", True)
     transition_duration = max(0.0, float(config["video"].get("transition_duration", 0.3)))
+    ken_burns_enabled = bool(config["video"].get("ken_burns", False))
+    ken_burns_zoom = max(0.0, min(0.5, float(config["video"].get("ken_burns_zoom", 0.08))))
 
     def make_frame(t):
         keyword = ""
@@ -502,6 +525,17 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
                     except Exception:
                         pass  # fallback to gradient
                 break
+
+        # Ken Burns：仅渐变背景（无 footage clip）
+        if ken_burns_enabled and cur_idx >= 0:
+            has_current_kb = 0 <= cur_idx < len(footage_clips) and footage_clips[cur_idx] is not None
+            if not has_current_kb:
+                ts = timestamps[cur_idx]
+                seg_duration = max(0.0, ts["end"] - ts["start"])
+                if seg_duration > 0:
+                    progress = (t - ts["start"]) / seg_duration
+                    bg_array = _apply_zoom(np.array(bg.convert("RGB")), progress, ken_burns_zoom, width, height)
+                    bg = Image.fromarray(bg_array).convert("RGBA")
 
         # crossfade：当前段最后 transition_duration 秒与下一段首帧混合
         # 仅当当前段或下一段至少有一个 footage 时才执行

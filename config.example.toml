@@ -54,6 +54,8 @@ subtitle_shadow_alpha = 120     # 阴影透明度（默认 80，0-255）
 bgm_fade_seconds = 2.0          # BGM 淡入淡出时长（秒）
 bgm_duck_ratio = 0.4            # TTS 说话时 BGM 音量比例（0.4 = 降到 40%）
 transition_duration = 0.3       # 段间 crossfade 时长（秒），0 禁用
+ken_burns = false               # Ken Burns 动态效果开关（仅渐变背景）
+ken_burns_zoom = 0.08           # 最大 zoom 比例（0.08 = 8%）
 
 [stock]
 # 未来自动补素材开关；手动 CLI/WebUI 始终可执行
