@@ -124,6 +124,27 @@ def _highlight_keyword_segments(text: str, keyword: str) -> list[tuple[str, bool
     ]
 
 
+def _build_bgm_effects(
+    timestamps: list[dict],
+    total_duration: float,
+    fade_sec: float,
+    duck_ratio: float,
+) -> list:
+    """构建 BGM 特效列表：淡入淡出 + TTS 区间 ducking。"""
+    from moviepy.audio.fx import AudioFadeIn, AudioFadeOut, MultiplyVolume
+    if total_duration <= 0:
+        return []
+    fade_sec = max(0.0, min(float(fade_sec), total_duration / 2))
+    duck_ratio = max(0.0, min(1.0, float(duck_ratio)))
+    effects = []
+    if fade_sec > 0:
+        effects.extend([AudioFadeIn(fade_sec), AudioFadeOut(fade_sec)])
+    for ts in timestamps:
+        if duck_ratio < 1.0:
+            effects.append(MultiplyVolume(duck_ratio, start_time=ts["start"], end_time=ts["end"]))
+    return effects
+
+
 def _render_frame(
     width: int,
     height: int,
@@ -136,8 +157,14 @@ def _render_frame(
     keyword_highlight: bool = True,
     subtitle_shadow: bool = True,
     accent_color: tuple[int, int, int] = (100, 180, 255),
+    subtitle_stroke_width: int = 2,
+    subtitle_shadow_offset: int = 2,
+    subtitle_shadow_alpha: int = 80,
 ) -> np.ndarray:
     """渲染单帧：增强背景 + 关键词大字（底条）+ 字幕（阴影 + 高亮）。返回 RGB numpy。"""
+    subtitle_stroke_width = max(0, int(subtitle_stroke_width))
+    subtitle_shadow_offset = max(0, int(subtitle_shadow_offset))
+    subtitle_shadow_alpha = max(0, min(255, int(subtitle_shadow_alpha)))
     if bg_image is not None:
         img = bg_image.copy().convert("RGBA")
     else:
@@ -188,16 +215,20 @@ def _render_frame(
         total_h = line_h * len(sub_lines)
         y_start = height * 3 // 4 - total_h // 2
 
-        # 阴影层
+        # 阴影层 — 双层阴影（硬阴影 + 柔阴影）
         if subtitle_shadow:
             shadow_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
             shadow_draw = ImageDraw.Draw(shadow_layer)
+            off = subtitle_shadow_offset
             for i, line in enumerate(sub_lines):
                 bbox = shadow_draw.textbbox((0, 0), line, font=font_sub)
                 tw = bbox[2] - bbox[0]
-                x = (width - tw) // 2 + 2
-                y = y_start + i * line_h + 2
-                shadow_draw.text((x, y), line, fill=(0, 0, 0, 80), font=font_sub)
+                x = (width - tw) // 2
+                y = y_start + i * line_h
+                # 柔阴影（大偏移，低透明度）
+                shadow_draw.text((x + off + 1, y + off + 1), line, fill=(0, 0, 0, subtitle_shadow_alpha // 2), font=font_sub)
+                # 硬阴影（配置偏移，配置透明度）
+                shadow_draw.text((x + off, y + off), line, fill=(0, 0, 0, subtitle_shadow_alpha), font=font_sub)
             img = Image.alpha_composite(img, shadow_layer)
 
         # 主字幕层（含高亮）
@@ -216,7 +247,7 @@ def _render_frame(
                 if not seg:
                     continue
                 fill = (*accent_color, 255) if is_kw else (255, 255, 255, 255)
-                sub_draw.text((x, y), seg, fill=fill, font=font_sub, stroke_width=2, stroke_fill=(0, 0, 0, 255))
+                sub_draw.text((x, y), seg, fill=fill, font=font_sub, stroke_width=subtitle_stroke_width, stroke_fill=(0, 0, 0, 255))
                 seg_bb = sub_draw.textbbox((0, 0), seg, font=font_sub)
                 x += seg_bb[2] - seg_bb[0]
         img = Image.alpha_composite(img, sub_layer)
@@ -448,6 +479,9 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
         return _render_frame(
             width, height, text, keyword, font_path, config["video"]["subtitle_fontsize"], bg,
             keyword_highlight=kw_highlight, subtitle_shadow=sub_shadow,
+            subtitle_stroke_width=config["video"].get("subtitle_stroke_width", 2),
+            subtitle_shadow_offset=config["video"].get("subtitle_shadow_offset", 2),
+            subtitle_shadow_alpha=config["video"].get("subtitle_shadow_alpha", 80),
         )
 
     video = VideoClip(make_frame, duration=total_duration)
@@ -483,7 +517,11 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
                     from moviepy import concatenate_audioclips
                     repeats = int(total_duration / bgm_clip.duration) + 1
                     bgm_clip = concatenate_audioclips([bgm_clip.subclipped(0, bgm_clip.duration) for _ in range(repeats)])
-                bgm_clip = bgm_clip.subclipped(0, total_duration).with_volume_scaled(bgm_volume)
+                bgm_clip = bgm_clip.subclipped(0, total_duration)
+                fade_sec = config["video"].get("bgm_fade_seconds", 2.0)
+                duck_ratio = config["video"].get("bgm_duck_ratio", 0.4)
+                bgm_clip = bgm_clip.with_effects(_build_bgm_effects(timestamps, total_duration, fade_sec, duck_ratio))
+                bgm_clip = bgm_clip.with_volume_scaled(bgm_volume)
 
             if bgm_clip is not None:
                 mixed = CompositeAudioClip([audio_clip, bgm_clip])
