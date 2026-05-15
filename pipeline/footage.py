@@ -150,18 +150,21 @@ def match_footage(keyword: str, index: list[dict]) -> str | None:
                     expanded.add(cn)
     tokens = expanded
 
-    # 匹配评分
+    # 匹配评分（平局优先非 abstract 素材）
     best_score = 0
     best_path = None
+    best_is_abstract = True
     for entry in index:
         score = 0
         for tag in entry["tags"]:
             for tok in tokens:
                 if tag in tok or tok in tag:
                     score += 1
-        if score > best_score:
+        entry_is_abstract = "abstract" in entry["tags"]
+        if score > best_score or (score == best_score and best_is_abstract and not entry_is_abstract and score > 0):
             best_score = score
             best_path = entry["path"]
+            best_is_abstract = entry_is_abstract
 
     if best_path:
         return best_path

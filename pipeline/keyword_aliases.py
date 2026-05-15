@@ -13,6 +13,14 @@ ALIASES: dict[str, set[str]] = {
     "模型": {"ai", "model"},
     "界面": {"ui", "interface"},
     "搜索": {"search"},
+    # 产品/品牌 → ai（key 必须小写，因 match_footage tokens 已 lower）
+    "claude": {"ai"},
+    "gpt": {"ai"},
+    "chatgpt": {"ai"},
+    "openai": {"ai"},
+    "多模态": {"ai"},
+    # 文档/数据 → data
+    "pdf": {"data"},
     "网络": {"network", "internet"},
     "自动化": {"automation"},
     "深度学习": {"ai", "deep-learning"},
