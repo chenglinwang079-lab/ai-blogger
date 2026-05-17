@@ -128,7 +128,7 @@ def _load_manifest(script_id: str, config: dict) -> dict | None:
     return None
 
 
-def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = None, config: dict | None = None, force: bool = False, bgm_id: str | None = None, mute: bool = False, style_id: str | None = None, tts_backend: str | None = None) -> dict | None:
+def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = None, config: dict | None = None, force: bool = False, bgm_id: str | None = None, mute: bool = False, style_id: str | None = None, tts_backend: str | None = None, skip_prediction: bool = False, update_manifest_flag: bool = True) -> dict | None:
     """执行单步，返回结果 dict。"""
     from pipeline import topic as topic_mod
     from pipeline import script as script_mod
@@ -150,18 +150,19 @@ def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = N
         if not script_id:
             logger.error("score 步骤需要 --script-id")
             return None
-        return quality_mod.quality_check(script_id, config)
+        return quality_mod.quality_check(script_id, config, skip_prediction=skip_prediction)
 
     elif step == "predict":
-        # predict 已在 quality_check 中自动完成
-        logger.info("predict 已在 score 步骤中自动完成")
-        return {"status": "already_done"}
+        if not script_id:
+            logger.error("predict 步骤需要 --script-id")
+            return None
+        return quality_mod.predict_only(script_id, config, force=force, update_manifest_flag=update_manifest_flag)
 
     elif step == "tts":
         if not script_id:
             logger.error("tts 步骤需要 --script-id")
             return None
-        return tts_mod.generate_audio(script_id, config, backend=tts_backend)
+        return tts_mod.generate_audio(script_id, config, backend=tts_backend, update_manifest_flag=update_manifest_flag)
 
     elif step == "render":
         if not script_id:
@@ -180,6 +181,9 @@ def _run_step(step: str, *, topic: dict | None = None, script_id: str | None = N
 
 def cmd_run(args: argparse.Namespace, config: dict) -> None:
     """run 命令：完整流程或从断点恢复。"""
+    from concurrent.futures import ThreadPoolExecutor
+    from pipeline import update_manifest
+
     run_id = generate_run_id()
     logger.info(f"Run {run_id} 启动")
 
@@ -209,9 +213,58 @@ def cmd_run(args: argparse.Namespace, config: dict) -> None:
         logger.error("run 命令需要 --topic 或 --script-id")
         sys.exit(1)
 
+    # 并行调度：predict + tts 可并行
+    parallel_enabled = "predict" in steps_to_run and "tts" in steps_to_run
+    parallel_done = False
+
     for step in steps_to_run:
+        # 并行块：predict + tts
+        if step == "predict" and parallel_enabled and not parallel_done:
+            parallel_done = True
+            logger.info("--- 并行执行: predict + tts ---")
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                f_predict = pool.submit(
+                    _run_step, "predict",
+                    script_id=script_id, config=config, force=args.force,
+                    update_manifest_flag=False,
+                )
+                f_tts = pool.submit(
+                    _run_step, "tts",
+                    script_id=script_id, config=config,
+                    bgm_id=getattr(args, "bgm_id", None),
+                    mute=getattr(args, "mute", False),
+                    tts_backend=getattr(args, "tts_backend", None),
+                    update_manifest_flag=False,
+                )
+                predict_result = f_predict.result()
+                tts_result = f_tts.result()
+
+            if predict_result is None or tts_result is None:
+                logger.error("并行步骤失败，终止")
+                sys.exit(1)
+
+            # 主线程统一更新 manifest
+            script_dir = Path(config["paths"]["cheat_root"]) / "scripts" / script_id
+            if predict_result.get("status") in ("ok", "skipped"):
+                update_manifest(script_dir, "predict")
+            update_manifest(script_dir, "tts")
+
+            logger.info("并行步骤 predict + tts 完成")
+            continue
+
+        if step == "tts" and parallel_done:
+            continue  # 已在并行块中执行
+
         logger.info(f"--- 步骤: {step} ---")
-        result = _run_step(step, topic=topic, script_id=script_id, config=config, force=args.force, style_id=getattr(args, "style", None), tts_backend=getattr(args, "tts_backend", None))
+
+        # score 步骤在并行模式下跳过内联 prediction（由 predict 步骤独立执行）
+        skip_pred = step == "score" and parallel_enabled
+        result = _run_step(
+            step, topic=topic, script_id=script_id, config=config, force=args.force,
+            bgm_id=getattr(args, "bgm_id", None), mute=getattr(args, "mute", False),
+            style_id=getattr(args, "style", None), tts_backend=getattr(args, "tts_backend", None),
+            skip_prediction=skip_pred,
+        )
 
         if result is None:
             logger.error(f"步骤 {step} 失败，终止")

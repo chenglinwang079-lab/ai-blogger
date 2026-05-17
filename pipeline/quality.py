@@ -7,7 +7,7 @@ from pipeline import validate_script_id
 from pipeline.llm_utils import call_llm, parse_llm_json
 
 
-def quality_check(script_id: str, config: dict) -> dict:
+def quality_check(script_id: str, config: dict, *, skip_prediction: bool = False) -> dict:
     """质控主流程。
 
     流程:
@@ -52,25 +52,27 @@ def quality_check(script_id: str, config: dict) -> dict:
             best_text = script_text
 
         if score_result["composite"] >= threshold:
-            # 先生成预测（可能失败），成功后再写文件
-            prediction = _generate_prediction(script_text, score_result, config)
-
-            # 预测成功 → 写 score.json + final.md（确保全部成功后才持久化）
+            # 写 score.json + final.md
             (script_dir / "score.json").write_text(
                 json.dumps(score_result, ensure_ascii=False, indent=2), encoding="utf-8"
             )
             (script_dir / "final.md").write_text(script_text, encoding="utf-8")
 
-            # 写盲预测
-            write_prediction(script_id, score_result, prediction, config)
+            if not skip_prediction:
+                # 生成并写盲预测
+                prediction = _generate_prediction(script_text, score_result, config)
+                write_prediction(script_id, score_result, prediction, config)
 
-            # 更新 manifest（最后更新，确保前面都成功）
+            # 更新 manifest
             if manifest:
                 if "score" not in manifest["completed_steps"]:
                     manifest["completed_steps"].append("score")
-                if "predict" not in manifest["completed_steps"]:
-                    manifest["completed_steps"].append("predict")
-                manifest["current_step"] = "tts"
+                if not skip_prediction:
+                    if "predict" not in manifest["completed_steps"]:
+                        manifest["completed_steps"].append("predict")
+                    manifest["current_step"] = "tts"
+                else:
+                    manifest["current_step"] = "predict"
                 manifest_path.write_text(
                     json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
@@ -85,6 +87,57 @@ def quality_check(script_id: str, config: dict) -> dict:
     # 重写用尽，保存 best.md
     (script_dir / "best.md").write_text(best_text, encoding="utf-8")
     return {"passed": False, "score": best_score, "rewrites": rewrites}
+
+
+def predict_only(script_id: str, config: dict, *, force: bool = False, update_manifest_flag: bool = True) -> dict:
+    """独立预测步骤：读 final.md + score.json，生成盲预测。
+
+    - force=True：覆盖已有预测
+    - force=False 且已存在：跳过，返回 skipped
+    - update_manifest_flag=True：成功/跳过都标记 manifest
+    """
+    from adapter.cheat import write_prediction
+
+    validate_script_id(script_id)
+    cheat_root = Path(config["paths"]["cheat_root"])
+    script_dir = cheat_root / "scripts" / script_id
+    final_path = script_dir / "final.md"
+    score_path = script_dir / "score.json"
+
+    if not final_path.exists():
+        raise FileNotFoundError(f"final.md 不存在: {final_path}")
+    if not score_path.exists():
+        raise FileNotFoundError(f"score.json 不存在: {score_path}")
+
+    pred_json_path = cheat_root / "predictions" / f"{script_id}.json"
+    if pred_json_path.exists() and not force:
+        if update_manifest_flag:
+            manifest_path = script_dir / "manifest.json"
+            if manifest_path.exists():
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if "predict" not in manifest.get("completed_steps", []):
+                    manifest.setdefault("completed_steps", []).append("predict")
+                    manifest_path.write_text(
+                        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+        return {"status": "skipped"}
+
+    script_text = final_path.read_text(encoding="utf-8")
+    score_result = json.loads(score_path.read_text(encoding="utf-8"))
+    prediction = _generate_prediction(script_text, score_result, config)
+    write_prediction(script_id, score_result, prediction, config, force=force)
+
+    if update_manifest_flag:
+        manifest_path = script_dir / "manifest.json"
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if "predict" not in manifest.get("completed_steps", []):
+                manifest.setdefault("completed_steps", []).append("predict")
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+    return {"status": "ok", "prediction": prediction}
 
 
 def _rewrite_script(script_text: str, score_result: dict, config: dict, *, style_id: str | None = None) -> str:

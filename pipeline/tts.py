@@ -320,7 +320,7 @@ def _generate_hybrid(
     return str(audio_path), durations, backends, fallback_reason
 
 
-def generate_audio(script_id: str, config: dict, *, backend: str | None = None) -> dict:
+def generate_audio(script_id: str, config: dict, *, backend: str | None = None, update_manifest_flag: bool = True) -> dict:
     """生成音频。
 
     - 读取 cheat/scripts/<script_id>/final.md
@@ -375,7 +375,8 @@ def generate_audio(script_id: str, config: dict, *, backend: str | None = None) 
     audio_path = Path(audio_path)
 
     # 更新 manifest
-    update_manifest(script_dir, "tts")
+    if update_manifest_flag:
+        update_manifest(script_dir, "tts")
 
     # timestamps — 用真实音频段时长，新增 backend 字段
     timestamps_path = output_dir / "timestamps.json"
