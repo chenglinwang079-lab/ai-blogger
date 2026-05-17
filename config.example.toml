@@ -59,7 +59,7 @@ ken_burns_zoom = 0.08           # 最大 zoom 比例（0.08 = 8%）
 
 [stock]
 # 未来自动补素材开关；手动 CLI/WebUI 始终可执行
-auto_fill_enabled = false
+auto_fill_enabled = false   # render 前自动补缺失素材（仅 footage 模式，需配置 API key）
 provider_order = ["pexels", "pixabay"]
 max_downloads_per_keyword = 2
 cache_hours = 24

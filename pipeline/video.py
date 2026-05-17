@@ -436,6 +436,7 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
     footage_clips = []
     footage_hits = 0
     footage_segments = []  # 每段素材使用记录
+    auto_fill_report = None
 
     if render_mode == "footage":
         from pipeline.footage import index_footage, load_blocklist, match_footage_with_reason
@@ -446,6 +447,39 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
             footage_dir = _PROJECT_ROOT / footage_dir
         idx = index_footage(footage_dir, exclude=load_blocklist(footage_dir))
         logger.info(f"素材索引: {len(idx)} 个文件")
+
+        # ── 自动补素材（仅 footage 模式） ──
+        auto_fill_enabled = (
+            render_mode == "footage"
+            and bool(config.get("stock", {}).get("auto_fill_enabled", False))
+        )
+        if auto_fill_enabled:
+            from pipeline.stock import fill_footage_for_script
+            missing_keywords: list[str] = []
+            seen_kw: set[str] = set()
+            for i, ts in enumerate(timestamps):
+                kw = keywords[i] if i < len(keywords) else ""
+                if not kw or kw in seen_kw:
+                    continue
+                seen_kw.add(kw)
+                result = match_footage_with_reason(kw, idx)
+                if result.get("reason") in ("abstract_fallback", "none"):
+                    missing_keywords.append(kw)
+            if missing_keywords:
+                logger.info(f"自动补素材: {len(missing_keywords)} 个缺失关键词")
+                try:
+                    auto_fill_report = fill_footage_for_script(script_id, config)
+                except Exception as exc:
+                    logger.warning(f"自动补素材失败，继续渲染: {exc}")
+                    auto_fill_report = {
+                        "missing_keywords": [{"keyword": kw} for kw in missing_keywords],
+                        "downloaded": [],
+                        "skipped_cached": [],
+                        "failed": [{"stage": "auto_fill", "reason": str(exc)}],
+                    }
+                if auto_fill_report and auto_fill_report.get("downloaded"):
+                    idx = index_footage(footage_dir, exclude=load_blocklist(footage_dir))
+                    logger.info(f"重新索引: {len(idx)} 个文件")
 
         used_footage: set[str] = set()
         recent_selections: list[str] = []
@@ -643,6 +677,17 @@ def render_video(script_id: str, config: dict, *, bgm_id: str | None = None, mut
         "gradient_fallback": gradient_fb,
         "segments": footage_segments,
     }
+    if auto_fill_report:
+        report["auto_fill"] = {
+            "missing_keywords": len(auto_fill_report.get("missing_keywords", [])),
+            "downloaded": len(auto_fill_report.get("downloaded", [])),
+            "skipped_cached": len(auto_fill_report.get("skipped_cached", [])),
+            "failed": len(auto_fill_report.get("failed", [])),
+            "details": {
+                "downloaded": auto_fill_report.get("downloaded", []),
+                "failed": auto_fill_report.get("failed", []),
+            },
+        }
     # BGM mode 判定：手动指定成功才记 "manual"，回退后记 "auto_fallback"
     if mute:
         bgm_mode = "mute"
