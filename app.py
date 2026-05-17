@@ -804,7 +804,7 @@ def wf_quality_cb(state):
     # 禁用质控按钮防重复点击
     yield state, "⏳ 正在质控...", gr.update(), gr.update(), gr.update(interactive=False)
     try:
-        result = quality_check(sid, config)
+        result = quality_check(sid, config, skip_prediction=True)
     except Exception:
         err = traceback.format_exc()
         yield state, f"❌ 质控失败:\n```\n{err}\n```", gr.update(), gr.update(), gr.update(interactive=True)
@@ -840,7 +840,11 @@ def wf_go_cb(state):
 
 
 def wf_pipeline_cb(state, render_mode, tts_backend_val=None):
-    """Step 4: TTS → 渲染 → 导出。"""
+    """Step 4: 预测 + TTS 并行 → 渲染 → 导出。"""
+    from concurrent.futures import ThreadPoolExecutor
+    from pipeline.quality import predict_only
+    from pipeline import update_manifest
+
     sid = state.get("selected_script_id")
     if not sid:
         yield "请先完成质控", None, "", gr.update()
@@ -854,13 +858,51 @@ def wf_pipeline_cb(state, render_mode, tts_backend_val=None):
     # 禁用按钮防重复点击
     pipe_disabled = gr.update(interactive=False)
 
-    # TTS
-    yield "⏳ [1/3] TTS...", None, "", pipe_disabled
-    with tts_lock:
-        tts_result, tts_err = safe_call(generate_audio, sid, cfg, backend=tts_backend_val)
-    if tts_err:
-        yield f"❌ TTS 失败:\n```\n{tts_err}\n```", None, "", gr.update(interactive=True)
+    # ── 并行: predict + TTS ──
+    yield "⏳ [1/3] 预测 + TTS 并行执行...", None, "", pipe_disabled
+
+    script_dir = Path(cfg["paths"]["cheat_root"]) / "scripts" / sid
+
+    def _run_tts_locked():
+        with tts_lock:
+            return generate_audio(
+                sid, cfg,
+                backend=tts_backend_val,
+                update_manifest_flag=False,
+            )
+
+    predict_err = None
+    tts_err = None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_predict = pool.submit(
+            predict_only, sid, cfg, update_manifest_flag=False,
+        )
+        f_tts = pool.submit(_run_tts_locked)
+
+        try:
+            predict_result = f_predict.result()
+        except Exception as e:
+            predict_result = None
+            predict_err = f"predict 异常: {e}"
+
+        try:
+            tts_result = f_tts.result()
+        except Exception as e:
+            tts_result = None
+            tts_err = f"tts 异常: {e}"
+
+    # 检查结果（任一失败则中止，不更新 manifest）
+    if (not predict_result
+            or predict_result.get("status") not in ("ok", "skipped")
+            or not tts_result):
+        err_msg = predict_err or tts_err or "predict 或 tts 失败"
+        yield f"❌ 并行步骤失败:\n{err_msg}", None, "", gr.update(interactive=True)
         return
+
+    # 主线程统一更新 manifest
+    update_manifest(script_dir, "predict")
+    update_manifest(script_dir, "tts")
 
     tts_info = _format_tts_result(tts_result)
 
